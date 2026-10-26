@@ -7,7 +7,7 @@
  * pieces: configuration, debug/profiling controls, the display surface and
  * shader module helpers.
  *
- * SPDX-License-Identifier: MIT
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #ifndef VKVITA_H
 #define VKVITA_H

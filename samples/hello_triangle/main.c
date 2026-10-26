@@ -7,7 +7,7 @@
  * Cg source compiled at runtime (needs ur0:data/libshacccg.suprx).
  *
  * Controls: START quits. The triangle spins via a push constant.
- * SPDX-License-Identifier: MIT
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include <math.h>
 #include <stdio.h>

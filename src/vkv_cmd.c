@@ -2,7 +2,7 @@
  * VkVita: command pools, command buffers and vkCmd* recording.
  * Commands are recorded into a byte arena and replayed at vkQueueSubmit
  * (see vkv_queue.c), which is where they become GXM calls.
- * SPDX-License-Identifier: MIT
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include "vkv_internal.h"
 

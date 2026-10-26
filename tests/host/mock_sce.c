@@ -14,7 +14,7 @@
  * to fabricate a program with plausible reflection data.
  *
  * Exit code: 0 if no MOCK ERROR was reported.
- * SPDX-License-Identifier: MIT
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #define _GNU_SOURCE
 

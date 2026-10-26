@@ -1,7 +1,7 @@
 /*
  * VkVita: queue submission (command replay onto the GXM context),
  * swapchain and presentation.
- * SPDX-License-Identifier: MIT
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include "vkv_internal.h"
 

@@ -1,7 +1,7 @@
 /*
  * VkVita: shader modules (GXP binaries or Cg source via vitaShaRK),
  * reflection, attribute/uniform mapping, shader logging and caching.
- * SPDX-License-Identifier: MIT
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include "vkv_internal.h"
 

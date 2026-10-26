@@ -1,7 +1,7 @@
 /*
  * Minimal VkVita program: cycles the clear color. Needs no shaders, so it
  * runs even without libshacccg.suprx. Start your port from here.
- * SPDX-License-Identifier: MIT
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include <math.h>
 #include <psp2/ctrl.h>

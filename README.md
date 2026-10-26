@@ -150,9 +150,8 @@ looks right. For that you need a real Vita or Vita3K.
 
 ## License
 
-VkVita is MIT licensed, see `LICENSE`. The bundled Vulkan headers are
-Apache 2.0 or MIT.
+VkVita is licensed under the GPL 3.0 (or any later version), see `LICENSE`.
+If you use it in your own project, that project has to be GPL 3.0 compatible too.
 
-One thing to keep in mind: vitaShaRK is LGPL 3.0. If you ship a game that
-links it, you have to follow the LGPL for that part. If you don't want that,
-build with `-DVKV_WITH_SHARK=OFF` and use precompiled GXP shaders.
+The bundled Vulkan headers are Apache 2.0 or MIT, and vitaShaRK is LGPL 3.0.
+Both work fine together with the GPL.

@@ -2,7 +2,7 @@
  * Small helper shared by the VkVita samples: instance, device, swapchain,
  * render pass (optional depth), framebuffers and per-frame sync.
  * hello_triangle does all of this by hand so you can see the full flow.
- * SPDX-License-Identifier: MIT
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #ifndef VKV_SAMPLE_H
 #define VKV_SAMPLE_H

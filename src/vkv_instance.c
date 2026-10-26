@@ -1,6 +1,6 @@
 /*
  * VkVita: instance, physical device, surface queries.
- * SPDX-License-Identifier: MIT
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include "vkv_internal.h"
 

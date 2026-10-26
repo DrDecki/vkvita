@@ -1,6 +1,6 @@
 /*
  * VkVita: device (GXM init), memory, buffers, images, samplers, sync.
- * SPDX-License-Identifier: MIT
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include "vkv_internal.h"
 

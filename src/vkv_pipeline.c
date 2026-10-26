@@ -1,7 +1,7 @@
 /*
  * VkVita: descriptor sets, pipeline layouts, render passes, framebuffers
  * and graphics pipelines (translated to GXM patched programs + state).
- * SPDX-License-Identifier: MIT
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include "vkv_internal.h"
 

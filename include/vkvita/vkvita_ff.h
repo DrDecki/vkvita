@@ -10,7 +10,7 @@
  * Its built-in shaders are Cg compiled at runtime with vitaShaRK, or GXP
  * blobs you provide in VkvFFInitInfo (see docs/FIXED_FUNCTION.md).
  *
- * SPDX-License-Identifier: MIT
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #ifndef VKVITA_FF_H
 #define VKVITA_FF_H

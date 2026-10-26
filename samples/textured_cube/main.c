@@ -11,7 +11,7 @@
  *   SELECT      profile log     TRIANGLE  validation on/off
  *   SQUARE      GPU sync timing CIRCLE    culling off (compat)
  *   START       quit
- * SPDX-License-Identifier: MIT
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include <math.h>
 #include <string.h>

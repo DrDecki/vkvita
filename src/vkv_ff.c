@@ -1,7 +1,7 @@
 /*
  * VkVita: fixed-function compatibility layer (OpenGL 1.x style
  * immediate mode on top of internal GXM pipelines).
- * SPDX-License-Identifier: MIT
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include "vkv_internal.h"
 
