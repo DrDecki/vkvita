@@ -1,0 +1,7 @@
+@PACKAGE_INIT@
+
+# VkVita: Vulkan-style API over PS Vita GXM.
+# Provides the imported target VkVita::vkvita (headers + all required stubs).
+set(VkVita_WITH_SHARK @VKV_SHARK@)
+include("${CMAKE_CURRENT_LIST_DIR}/VkVitaTargets.cmake")
+check_required_components(VkVita)

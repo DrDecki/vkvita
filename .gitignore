@@ -1,0 +1,7 @@
+build*/
+*.vpk
+*.velf
+*.self
+eboot.bin
+param.sfo
+*.o
