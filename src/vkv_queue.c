@@ -361,22 +361,64 @@ static void vkv_apply_viewport(VkvReplay *R, const VkvPipeline *p) {
 	}
 }
 
-static void vkv_write_uniforms(void *buf, const VkvUniformMap *map, uint32_t n, const uint8_t *push, uint32_t pushHigh,
-                               const char *shader) {
+static const uint8_t *vkv_uniform_buffer_data(VkvReplay *R, int set, uint32_t binding, uint32_t *range) {
+	if (set < 0 || set >= VKV_MAX_SETS || !R->sets[set]) return NULL;
+	VkvSet *s = R->sets[set];
+	for (uint32_t b = 0; b < s->layout->bindingCount; b++) {
+		const VkvDslBinding *lb = &s->layout->bindings[b];
+		if (lb->binding != binding || !lb->count) continue;
+		const VkvDescriptor *d = &s->desc[lb->first];
+		if (!d->valid || !d->buffer || !d->buffer->ptr) return NULL;
+		if (d->type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && d->type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC)
+			return NULL;
+		uint32_t off = d->offset;
+		if (d->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC && lb->dynIndex < VKV_MAX_DYNAMIC)
+			off += R->dyn[set][lb->dynIndex];
+		*range = d->range;
+		return d->buffer->ptr + off;
+	}
+	return NULL;
+}
+
+static void vkv_write_uniforms(VkvReplay *R, void *buf, const VkvUniformMap *map, uint32_t n, const char *shader) {
 	for (uint32_t i = 0; i < n; i++) {
 		const VkvUniformMap *u = &map[i];
 		uint32_t bytes = u->elems > 1 ? u->elemStride * u->elems : u->comps * 4;
-		if (u->offset + bytes > VKV_MAX_PUSH) continue;
-		if (vkv_validate() && u->offset + bytes > pushHigh)
-			vkv_fail("draw", "shader '%s' uniform '%s' reads push constant bytes [%u..%u) that were never pushed", shader,
-			         sceGxmProgramParameterGetName(u->param), (unsigned)u->offset, (unsigned)(u->offset + bytes));
-		const float *src = (const float *)(push + u->offset);
-		if (u->elems <= 1 || u->elemStride == u->comps * 4) {
-			sceGxmSetUniformDataF(buf, u->param, 0, u->comps * u->elems, src);
+		const uint8_t *base;
+		if (u->set < 0) {
+			if (u->offset + bytes > VKV_MAX_PUSH) continue;
+			if (vkv_validate() && u->offset + bytes > R->pushHigh)
+				vkv_fail("draw", "shader '%s' uniform '%s' reads push constant bytes [%u..%u) that were never pushed",
+				         shader, sceGxmProgramParameterGetName(u->param), (unsigned)u->offset,
+				         (unsigned)(u->offset + bytes));
+			base = R->push;
+		} else {
+			uint32_t range = 0;
+			base = vkv_uniform_buffer_data(R, u->set, u->binding, &range);
+			if (!base || u->offset + bytes > range) {
+				if (vkv_validate())
+					vkv_fail("draw", "shader '%s' uniform '%s' needs %u bytes at offset %u of the uniform buffer at "
+					         "set %d binding %u, %s", shader, sceGxmProgramParameterGetName(u->param), (unsigned)bytes,
+					         (unsigned)u->offset, (int)u->set, (unsigned)u->binding,
+					         base ? "which is too small" : "but none is bound");
+				continue;
+			}
+		}
+		if (u->scalar) {
+			float conv[4];
+			uint32_t c = VKV_MIN(u->comps, 4u);
+			for (uint32_t k = 0; k < c; k++) {
+				uint32_t bits;
+				memcpy(&bits, base + u->offset + k * 4, 4);
+				conv[k] = u->scalar == 1 ? (float)(int32_t)bits : (float)bits;
+			}
+			sceGxmSetUniformDataF(buf, u->param, 0, c, conv);
+		} else if (u->elems <= 1 || u->elemStride == u->comps * 4) {
+			sceGxmSetUniformDataF(buf, u->param, 0, u->comps * u->elems, (const float *)(base + u->offset));
 		} else {
 			for (uint32_t e = 0; e < u->elems; e++)
 				sceGxmSetUniformDataF(buf, u->param, e * u->comps, u->comps,
-				                      (const float *)(push + u->offset + e * u->elemStride));
+				                      (const float *)(base + u->offset + e * u->elemStride));
 		}
 	}
 }
@@ -491,9 +533,9 @@ static void vkv_exec_draw(VkvReplay *R, const VkvCmdDraw *c, bool indexed) {
 		/* push constants -> default uniform buffers (re-reserved per draw) */
 		void *ub;
 		if (p->vDefaultSize && sceGxmReserveVertexDefaultUniformBuffer(R->ctx, &ub) >= 0)
-			vkv_write_uniforms(ub, p->vuni, p->vuniCount, R->push, R->pushHigh, p->vname);
+			vkv_write_uniforms(R, ub, p->vuni, p->vuniCount, p->vname);
 		if (p->fDefaultSize && sceGxmReserveFragmentDefaultUniformBuffer(R->ctx, &ub) >= 0)
-			vkv_write_uniforms(ub, p->funi, p->funiCount, R->push, R->pushHigh, p->fname);
+			vkv_write_uniforms(R, ub, p->funi, p->funiCount, p->fname);
 
 		int r = sceGxmDraw(R->ctx, p->prim, ifmt, indices, c->count);
 		if (r < 0) VKV_ERROR("sceGxmDraw failed 0x%08X (pipeline '%s')", (unsigned)r, p->vname);

@@ -138,12 +138,13 @@ VkResult vkvCreateDisplaySurface(VkInstance instance, VkSurfaceKHR *surface);
 /* Shaders                                                                  */
 /* ------------------------------------------------------------------------ */
 /*
- * GXM cannot run SPIR-V. VkShaderModuleCreateInfo::pCode may hold:
+ * GXM cannot run SPIR-V directly. VkShaderModuleCreateInfo::pCode may hold:
  *   - a GXP binary (compiled offline with psp2cgc), detected by its "GXP" magic
- *   - Cg source text, compiled at pipeline creation with vitaShaRK
- *     (needs libshacccg.suprx on the device and a VKV_WITH_SHARK build)
- * SPIR-V input is rejected with a clear error. For Cg source, codeSize is
- * the string length (the multiple-of-4 rule is not enforced).
+ *   - SPIR-V, detected by its magic, translated to Cg (VKV_WITH_SPIRV build)
+ *   - Cg source text
+ * SPIR-V and Cg are compiled at pipeline creation with vitaShaRK (needs
+ * libshacccg.suprx on the device and a VKV_WITH_SHARK build). For Cg source,
+ * codeSize is the string length (the multiple-of-4 rule is not enforced).
  *
  * Chain VkvShaderModuleInfoVITA into pNext to control how Vulkan locations
  * and push constants map onto GXM parameter names.
@@ -153,7 +154,8 @@ VkResult vkvCreateDisplaySurface(VkInstance instance, VkSurfaceKHR *surface);
 typedef enum VkvShaderSource {
 	VKV_SHADER_SOURCE_AUTO = 0, /* detect GXP / SPIR-V magic, otherwise Cg */
 	VKV_SHADER_SOURCE_GXP  = 1,
-	VKV_SHADER_SOURCE_CG   = 2
+	VKV_SHADER_SOURCE_CG   = 2,
+	VKV_SHADER_SOURCE_SPIRV = 3
 } VkvShaderSource;
 
 /* Vertex input location -> attribute parameter name in the vertex shader. */

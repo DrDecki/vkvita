@@ -1,13 +1,13 @@
 # Shaders
 
 GXM runs GXP programs compiled from Sony's Cg dialect. It cannot run
-SPIR-V, so `VkShaderModuleCreateInfo::pCode` takes one of these instead:
+SPIR-V directly, so `VkShaderModuleCreateInfo::pCode` takes one of these:
 
 | Input | How VkVita detects it | Needs |
 |---|---|---|
 | GXP binary | starts with `GXP\0` | nothing at runtime |
+| SPIR-V | magic `0x07230203` | `VKV_WITH_SPIRV` build, plus what Cg needs |
 | Cg source | anything else (or `VKV_SHADER_SOURCE_CG`) | vitaShaRK build + `ur0:data/libshacccg.suprx` |
-| SPIR-V | magic `0x07230203` | rejected with an error message |
 
 For Cg source `codeSize` is the string length; the multiple-of-4 rule is not
 enforced. Helpers:
@@ -21,6 +21,41 @@ vkvShaderCompilerAvailable(device);   /* 1 if runtime Cg compilation works */
 Cg is compiled when the first pipeline uses the module, because the stage
 is only known then. The same Cg module can be used as vertex and fragment
 shader (it is compiled once per stage); a GXP module has a fixed stage.
+
+## SPIR-V
+
+SPIR-V modules are translated to Cg when the first pipeline uses them, then
+compiled like Cg source. The translation uses the bundled SPIRV-Cross (HLSL
+backend, shader model 3.0) and rewrites the result into Sony's Cg dialect.
+Nothing from the sections below has to be done by hand:
+
+- Vertex input `location = n` becomes the Cg semantic `ATTRn`.
+- `sampler2D` / `samplerCube` at binding `n` become `TEXUNITn`.
+- Push constant members become default uniforms at their SPIR-V offsets.
+- Uniform buffer members become default uniforms too. VkVita reads them from
+  the bound buffer when the command buffer is submitted, so the buffer can be
+  rewritten every frame without double buffering.
+- Integer push constant and uniform buffer members are converted to float on
+  upload and back to int in the shader.
+- Integer varyings (`flat out int`) are carried as floats and rounded.
+
+Not supported (the translation fails with a message naming the resource):
+separate `texture2D` / `sampler` objects, sampler arrays, storage buffers and
+images, subpass inputs, `gl_VertexIndex` / `gl_InstanceIndex`, compute and
+geometry stages. Struct members inside uniform blocks are declared but not
+fed yet.
+
+With `debug = shaders` the log contains the generated Cg (lines starting with
+`cg-src[name:line]`), which is what to look at when the Cg compiler reports
+an error. The `spirv2cg` tool prints the same Cg on the PC:
+
+```sh
+tools/build_spirv2cg.sh
+./spirv2cg shader.vert.spv
+```
+
+Compiled SPIR-V shaders go through the shader cache like Cg, so a release can
+ship the dumped GXP files and skip both the translation and the compiler.
 
 ## Writing shaders for VkVita
 

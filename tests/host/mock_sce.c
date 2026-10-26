@@ -259,6 +259,7 @@ SceGxmProgram *shark_compile_shader_extended(const char *src, uint32_t *size, sh
 	if (!g_sharkReady) return NULL;
 	if (strlen(src) != *size) mock_fail("shark: size %u != strlen %zu", *size, strlen(src));
 	const char *m = strstr(src, "main(");
+	while (m && m > src && (isalnum((unsigned char)m[-1]) || m[-1] == '_')) m = strstr(m + 1, "main(");
 	if (!m) { if (g_sharkLog) g_sharkLog("no main()", SHARK_LOG_ERROR, 1); return NULL; }
 	SceGxmProgram *p = calloc(1, sizeof(*p));
 	memcpy(p->magic, "GXP", 4);
@@ -266,6 +267,38 @@ SceGxmProgram *shark_compile_shader_extended(const char *src, uint32_t *size, sh
 	const char *s = m + 5;
 	int depth = 0;
 	unsigned attrIdx = 0, ub = 0, tex = 0;
+
+	/* top-level "uniform TYPE NAME[n] : SEM;" declarations */
+	for (const char *l = src; l && *l; l = strchr(l, '\n') ? strchr(l, '\n') + 1 : NULL) {
+		if (strncmp(l, "uniform ", 8)) continue;
+		char ty[40], nm[64], sem[32] = "";
+		if (sscanf(l + 8, "%39s %63[^ ;:]", ty, nm) != 2) continue;
+		const char *colon = strchr(l, ':'), *eol = strchr(l, ';');
+		if (colon && eol && colon < eol) sscanf(colon + 1, " %31[^ ;]", sem);
+		unsigned arrDecl = 1;
+		char *br = strchr(nm, '[');
+		if (br) { arrDecl = (unsigned)atoi(br + 1); *br = 0; }
+		if (p->count >= MP_MAX) break;
+		struct SceGxmProgramParameter *pp = &p->p[p->count];
+		memset(pp, 0, sizeof(*pp));
+		snprintf(pp->name, sizeof(pp->name), "%s", nm);
+		pp->type = SCE_GXM_PARAMETER_TYPE_F32;
+		if (!strncmp(ty, "sampler", 7)) {
+			pp->cat = SCE_GXM_PARAMETER_CATEGORY_SAMPLER;
+			pp->res = !strncmp(sem, "TEXUNIT", 7) ? (unsigned)atoi(sem + 7) : tex;
+			tex++;
+			pp->comps = 4; pp->arr = 1;
+			p->count++;
+		} else if (!strncmp(ty, "float", 5) || !strncmp(ty, "half", 4)) {
+			pp->cat = SCE_GXM_PARAMETER_CATEGORY_UNIFORM;
+			pp->comps = type_comps(ty, &pp->arr);
+			pp->arr *= arrDecl;
+			pp->container = 14;
+			pp->res = ub;
+			ub += pp->comps * pp->arr;
+			p->count++;
+		}
+	}
 	char param[256];
 	size_t n = 0;
 	for (;; s++) {

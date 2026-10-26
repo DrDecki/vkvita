@@ -3,9 +3,12 @@
 # the Vita system/GXM APIs (tests/host/mock_sce.c) with AddressSanitizer and
 # UBSan, then runs each sample for a scripted number of frames.
 #
-# Needs: gcc with ASan, vita-headers (from your VitaSDK) and vitashark.h.
+# Needs: gcc/g++ with ASan, vita-headers (from your VitaSDK) and vitashark.h.
 #   VITA_HEADERS  default: $VITASDK/arm-vita-eabi/include
 #   VITASHARK_INC default: same as VITA_HEADERS
+#   SPIRV_CROSS   empty: build the bundled SPIRV-Cross. Or link flags for an
+#                 installed SPIRV-Cross C library, for example
+#                 SPIRV_CROSS="-I/usr/include/spirv_cross -lspirv-cross-c-shared"
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 VITA_HEADERS="${VITA_HEADERS:-${VITASDK:-/usr/local/vitasdk}/arm-vita-eabi/include}"
@@ -15,9 +18,19 @@ mkdir -p "$OUT"
 
 CFLAGS=(-std=gnu11 -g -O1 -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=undefined
         -Wall -Wno-unused-parameter -Wno-missing-field-initializers -Wno-unused-function
-        -D__vita__ -DVKV_WITH_SHARK=1 -DVKV_ENABLE_DEBUG=1
+        -D__vita__ -DVKV_WITH_SHARK=1 -DVKV_ENABLE_DEBUG=1 -DVKV_WITH_SPIRV=1
         -isystem "$VITA_HEADERS" -I "$VITASHARK_INC"
         -I "$ROOT/include" -I "$ROOT/third_party/Vulkan-Headers/include" -I "$ROOT/samples/common")
+
+SPIRV_LINK=()
+if [[ -n "${SPIRV_CROSS:-}" ]]; then
+  read -r -a SPIRV_LINK <<< "$SPIRV_CROSS"
+  for flag in "${SPIRV_LINK[@]}"; do [[ $flag == -I* ]] && CFLAGS+=("$flag"); done
+  LINKER=gcc
+else
+  CFLAGS+=(-I "$ROOT/third_party/SPIRV-Cross")
+  LINKER=g++
+fi
 
 echo "== building library + mock"
 objs=()
@@ -26,14 +39,25 @@ for f in "$ROOT"/src/*.c "$ROOT/tests/host/mock_sce.c" "$ROOT/samples/common/vkv
   gcc "${CFLAGS[@]}" -c "$f" -o "$o"
   objs+=("$o")
 done
+if [[ -z "${SPIRV_CROSS:-}" ]]; then
+  echo "== building SPIRV-Cross"
+  for f in cfg cross cross_c cross_parsed_ir glsl hlsl parser; do
+    o="$OUT/spirv_$f.o"
+    [[ -f "$o" ]] || g++ -std=gnu++11 -O1 -g -w -fsanitize=address,undefined -DSPIRV_CROSS_C_API_GLSL=1 \
+      -DSPIRV_CROSS_C_API_HLSL=1 -c "$ROOT/third_party/SPIRV-Cross/spirv_$f.cpp" -o "$o" &
+    objs+=("$o")
+  done
+  wait
+fi
 
 build_sample() { # name source
-  gcc "${CFLAGS[@]}" "$2" "${objs[@]}" -lm -o "$OUT/$1"
+  $LINKER "${CFLAGS[@]}" -x c "$2" -x none "${objs[@]}" "${SPIRV_LINK[@]}" -lm -o "$OUT/$1"
 }
 build_sample hello_triangle "$ROOT/samples/hello_triangle/main.c"
 build_sample textured_cube  "$ROOT/samples/textured_cube/main.c"
 build_sample fixed_function "$ROOT/samples/fixed_function/main.c"
 build_sample template       "$ROOT/samples/standalone_template/main.c"
+build_sample spirv_cube     "$ROOT/samples/spirv_cube/main.c"
 
 fail=0
 run() { # label binary [env...]
@@ -59,6 +83,9 @@ run hello_triangle "$OUT/hello_triangle"
 run textured_cube  "$OUT/textured_cube"
 run fixed_function "$OUT/fixed_function"
 run template       "$OUT/template" MOCK_NO_SHARK=1
+run spirv_cube     "$OUT/spirv_cube"
+CONFIG_TXT=$'debug = info, validation, shaders' FRAMES=12 \
+  run spirv_debug "$OUT/spirv_cube"
 CONFIG_TXT=$'debug = info, validation, profile, shaders\ncompat = cpu_clear, gl_clip_space, invert_cull, ignore_scissor, shader_cache\nprofile_interval = 30' \
   run cube_compat "$OUT/textured_cube"
 CONFIG_TXT=$'debug = validation, gpu_sync, calls\ncompat = fast_transfers, no_vsync' FRAMES=12 \

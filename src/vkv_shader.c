@@ -13,9 +13,15 @@
 #if VKV_WITH_SHARK
 #include <vitashark.h>
 #endif
+#if VKV_WITH_SPIRV
+#include "vkv_spirv.h"
+#endif
 
 #define VKV_DEFAULT_UNIFORM_CONTAINER 14
+#ifndef VKV_SPIRV_MAGIC
 #define VKV_SPIRV_MAGIC 0x07230203u
+#endif
+#define VKV_SPIRV_HASH_SEED 0x53505601u
 
 static uint32_t vkv_fnv1a(const void *data, uint32_t size, uint32_t seed) {
 	const uint8_t *p = data;
@@ -226,11 +232,15 @@ uint32_t vkv_build_uniform_map(const VkvShaderModule *m, const SceGxmProgram *p,
 			size = stride;
 			align = comps == 1 ? 4 : comps == 2 ? 8 : 16;
 		}
-		int32_t explicitOff = -1;
+		int32_t explicitOff = -1, src = -1;
 		for (uint32_t u = 0; u < m->uniCount; u++)
-			if (m->unis[u].name && !strcmp(m->unis[u].name, name)) explicitOff = (int32_t)m->unis[u].offset;
+			if (m->unis[u].name && !strcmp(m->unis[u].name, name)) {
+				explicitOff = (int32_t)m->unis[u].offset;
+				src = (int32_t)u;
+			}
 		uint32_t off = explicitOff >= 0 ? (uint32_t)explicitOff : VKV_ALIGN(cursor, align);
 		if (explicitOff < 0) cursor = off + size;
+		int8_t set = src >= 0 && m->uniSet ? m->uniSet[src] : -1;
 
 		if (sceGxmProgramParameterGetType(pp) != SCE_GXM_PARAMETER_TYPE_F32) {
 			VKV_WARN("shader '%s': uniform '%s' is not float; push constants only feed float uniforms", m->name, name);
@@ -242,13 +252,90 @@ uint32_t vkv_build_uniform_map(const VkvShaderModule *m, const SceGxmProgram *p,
 		out[count].comps = comps;
 		out[count].elems = arr;
 		out[count].elemStride = stride;
-		if (vkv_dbg(VKV_DEBUG_LOG_SHADERS))
-			vkv_log(VKV_LOG_INFO, "shader '%s': uniform %-16s <- push constant bytes [%u..%u)", m->name, name,
-			        (unsigned)off, (unsigned)(off + size));
+		out[count].set = set;
+		out[count].binding = src >= 0 && m->uniBinding ? m->uniBinding[src] : 0;
+		out[count].scalar = src >= 0 && m->uniScalar ? m->uniScalar[src] : 0;
+		if (vkv_dbg(VKV_DEBUG_LOG_SHADERS)) {
+			if (set < 0)
+				vkv_log(VKV_LOG_INFO, "shader '%s': uniform %-16s <- push constant bytes [%u..%u)", m->name, name,
+				        (unsigned)off, (unsigned)(off + size));
+			else
+				vkv_log(VKV_LOG_INFO, "shader '%s': uniform %-16s <- set %d binding %u bytes [%u..%u)", m->name, name,
+				        (int)set, (unsigned)out[count].binding, (unsigned)off, (unsigned)(off + size));
+		}
 		count++;
 	}
 	return count;
 }
+
+/* ------------------------------------------------------------------------ */
+/* SPIR-V                                                                   */
+/* ------------------------------------------------------------------------ */
+static bool vkv_shader_add_uniform(VkvShaderModule *m, const char *name, uint32_t offset, int8_t set, uint8_t binding,
+                                   uint8_t scalar) {
+	for (uint32_t u = 0; u < m->uniCount; u++)
+		if (m->unis[u].name && !strcmp(m->unis[u].name, name)) return true;
+	uint32_t n = m->uniCount + 1;
+	VkvUniformBindingVITA *unis = realloc(m->unis, n * sizeof(*unis));
+	if (unis) m->unis = unis;
+	int8_t *sets = realloc(m->uniSet, n);
+	if (sets) m->uniSet = sets;
+	uint8_t *bindings = realloc(m->uniBinding, n);
+	if (bindings) m->uniBinding = bindings;
+	uint8_t *scalars = realloc(m->uniScalar, n);
+	if (scalars) m->uniScalar = scalars;
+	if (!unis || !sets || !bindings || !scalars) return false;
+	m->unis[m->uniCount].name = vkv_strdup(name);
+	m->unis[m->uniCount].offset = offset;
+	m->uniSet[m->uniCount] = set;
+	m->uniBinding[m->uniCount] = binding;
+	m->uniScalar[m->uniCount] = scalar;
+	m->uniCount = n;
+	return m->unis[n - 1].name != NULL;
+}
+
+#if VKV_WITH_SPIRV
+static void vkv_spirv_log(VkvSpirvLogLevel level, const char *msg, void *user) {
+	const VkvShaderModule *m = user;
+	VkvLogLevel l = level == VKV_SPIRV_LOG_ERROR ? VKV_LOG_ERROR : level == VKV_SPIRV_LOG_WARN ? VKV_LOG_WARN : VKV_LOG_INFO;
+	if (l == VKV_LOG_INFO && !vkv_dbg(VKV_DEBUG_LOG_SHADERS)) return;
+	vkv_log(l, "spirv[%s]: %s", m->name, msg);
+}
+
+static void vkv_log_source(const char *name, const char *src) {
+	unsigned line = 1;
+	for (const char *p = src; *p; line++) {
+		const char *nl = strchr(p, '\n');
+		int len = nl ? (int)(nl - p) : (int)strlen(p);
+		vkv_log(VKV_LOG_INFO, "cg-src[%s:%u] %.*s", name, line, len, p);
+		if (!nl) break;
+		p = nl + 1;
+	}
+}
+
+static SceGxmProgram *vkv_spirv_compile(struct VkDevice_T *dev, VkvShaderModule *m, VkvStage stage, uint32_t *size) {
+	VkvSpirvResult r;
+	uint64_t t0 = vkv_time_us();
+	if (vkv_spirv_translate((const uint32_t *)m->code, m->codeSize / 4,
+	                        stage == VKV_STAGE_VERTEX ? VKV_SPIRV_VERTEX : VKV_SPIRV_FRAGMENT, vkv_spirv_log, m, &r) != 0) {
+		VKV_ERROR("shader '%s': SPIR-V to Cg translation of the %s stage failed (see messages above)", m->name,
+		          k_stageNames[stage]);
+		return NULL;
+	}
+	if (vkv_dbg(VKV_DEBUG_LOG_SHADERS)) {
+		vkv_log(VKV_LOG_INFO, "translated %s shader '%s' from SPIR-V in %.2f ms", k_stageNames[stage], m->name,
+		        (vkv_time_us() - t0) / 1000.0f);
+		vkv_log_source(m->name, r.cg);
+	}
+	bool ok = true;
+	for (uint32_t i = 0; i < r.uniCount && ok; i++)
+		ok = vkv_shader_add_uniform(m, r.unis[i].name, r.unis[i].offset, (int8_t)r.unis[i].set,
+		                            (uint8_t)r.unis[i].binding, (uint8_t)r.unis[i].scalar);
+	SceGxmProgram *p = ok ? vkv_shark_compile(dev, r.cg, stage, m->name, m->hash, size) : NULL;
+	vkv_spirv_free(&r);
+	return p;
+}
+#endif
 
 /* ------------------------------------------------------------------------ */
 /* Module objects                                                           */
@@ -270,6 +357,16 @@ VkResult vkv_shader_get_program(struct VkDevice_T *dev, VkvShaderModule *m, VkvS
 			}
 			m->prog[stage] = p;
 			m->progOwned[stage] = false;
+		} else if (m->source == VKV_SHADER_SOURCE_SPIRV) {
+#if VKV_WITH_SPIRV
+			uint32_t size = 0;
+			SceGxmProgram *p = vkv_spirv_compile(dev, m, stage, &size);
+			if (!p) return VK_ERROR_INVALID_SHADER_NV;
+			m->prog[stage] = p;
+			m->progOwned[stage] = true;
+#else
+			return VK_ERROR_INVALID_SHADER_NV;
+#endif
 		} else {
 			uint32_t size = 0;
 			SceGxmProgram *p = vkv_shark_compile(dev, m->code, stage, m->name, m->hash, &size);
@@ -307,11 +404,18 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateShaderModule(VkDevice device, const VkSha
 	VkvShaderSource src = ext ? ext->source : VKV_SHADER_SOURCE_AUTO;
 	if (src == VKV_SHADER_SOURCE_AUTO) {
 		if (size >= 4 && code[0] == 'G' && code[1] == 'X' && code[2] == 'P' && code[3] == 0) src = VKV_SHADER_SOURCE_GXP;
-		else if (size >= 4 && *(const uint32_t *)code == VKV_SPIRV_MAGIC) {
-			VKV_ERROR("vkCreateShaderModule: SPIR-V cannot run on GXM. Provide Cg source or a GXP binary "
-			          "(see docs/SHADERS.md).");
+		else if (size >= 4 && *(const uint32_t *)code == VKV_SPIRV_MAGIC) src = VKV_SHADER_SOURCE_SPIRV;
+		else src = VKV_SHADER_SOURCE_CG;
+	}
+	if (src == VKV_SHADER_SOURCE_SPIRV) {
+#if VKV_WITH_SPIRV
+		if (VKV_CHECK(size % 4 == 0 && size >= 20, "SPIR-V code size %u is not a multiple of 4", (unsigned)size))
 			return VK_ERROR_INVALID_SHADER_NV;
-		} else src = VKV_SHADER_SOURCE_CG;
+#else
+		VKV_ERROR("vkCreateShaderModule: this VkVita was built without SPIR-V support (VKV_WITH_SPIRV=OFF). "
+		          "Provide Cg source or a GXP binary (see docs/SHADERS.md).");
+		return VK_ERROR_INVALID_SHADER_NV;
+#endif
 	}
 
 	VkvShaderModule *m = calloc(1, sizeof(*m));
@@ -326,10 +430,12 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateShaderModule(VkDevice device, const VkSha
 	memcpy(m->code, code, size);
 	m->code[size] = 0;
 	m->codeSize = size;
-	m->hash = vkv_fnv1a(code, size, 0);
+	m->hash = vkv_fnv1a(code, size, src == VKV_SHADER_SOURCE_SPIRV ? VKV_SPIRV_HASH_SEED : 0);
 
 	if (ext && ext->debugName) snprintf(m->name, sizeof(m->name), "%s", ext->debugName);
-	else snprintf(m->name, sizeof(m->name), "%s_%08x", src == VKV_SHADER_SOURCE_GXP ? "gxp" : "cg", (unsigned)m->hash);
+	else
+		snprintf(m->name, sizeof(m->name), "%s_%08x",
+		         src == VKV_SHADER_SOURCE_GXP ? "gxp" : src == VKV_SHADER_SOURCE_SPIRV ? "spv" : "cg", (unsigned)m->hash);
 
 	if (ext && ext->attributeBindingCount) {
 		m->attrs = calloc(ext->attributeBindingCount, sizeof(*m->attrs));
@@ -339,14 +445,9 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateShaderModule(VkDevice device, const VkSha
 			m->attrs[i].name = vkv_strdup(ext->pAttributeBindings[i].name);
 		}
 	}
-	if (ext && ext->uniformBindingCount) {
-		m->unis = calloc(ext->uniformBindingCount, sizeof(*m->unis));
-		m->uniCount = ext->uniformBindingCount;
-		for (uint32_t i = 0; i < m->uniCount; i++) {
-			m->unis[i].offset = ext->pUniformBindings[i].offset;
-			m->unis[i].name = vkv_strdup(ext->pUniformBindings[i].name);
-		}
-	}
+	if (ext)
+		for (uint32_t i = 0; i < ext->uniformBindingCount; i++)
+			vkv_shader_add_uniform(m, ext->pUniformBindings[i].name, ext->pUniformBindings[i].offset, -1, 0, 0);
 
 	if (src == VKV_SHADER_SOURCE_GXP && sceGxmProgramCheck((const SceGxmProgram *)m->code) < 0) {
 		VKV_ERROR("vkCreateShaderModule: '%s' has a GXP header but fails sceGxmProgramCheck", m->name);
@@ -356,7 +457,8 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateShaderModule(VkDevice device, const VkSha
 	}
 	if (vkv_dbg(VKV_DEBUG_LOG_SHADERS))
 		vkv_log(VKV_LOG_INFO, "shader module '%s': %s, %u bytes", m->name,
-		        src == VKV_SHADER_SOURCE_GXP ? "GXP binary" : "Cg source", (unsigned)size);
+		        src == VKV_SHADER_SOURCE_GXP ? "GXP binary" : src == VKV_SHADER_SOURCE_SPIRV ? "SPIR-V" : "Cg source",
+		        (unsigned)size);
 	*pModule = VKV_H(VkShaderModule, m);
 	return VK_SUCCESS;
 }
@@ -388,6 +490,9 @@ void vkv_shader_release(VkvShaderModule *m) {
 	for (uint32_t i = 0; i < m->uniCount; i++) free((void *)m->unis[i].name);
 	free(m->attrs);
 	free(m->unis);
+	free(m->uniSet);
+	free(m->uniBinding);
+	free(m->uniScalar);
 	free(m->code);
 	m->obj.magic = VKV_MAGIC_DEAD;
 	free(m);

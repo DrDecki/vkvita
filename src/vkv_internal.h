@@ -317,10 +317,13 @@ typedef enum VkvStage { VKV_STAGE_VERTEX = 0, VKV_STAGE_FRAGMENT = 1, VKV_STAGE_
 
 typedef struct VkvUniformMap {
 	const SceGxmProgramParameter *param;
-	uint32_t offset;      /* byte offset in the push constant block */
+	uint32_t offset;      /* byte offset in the push constant block or uniform buffer */
 	uint32_t comps;       /* components per element */
 	uint32_t elems;       /* array size */
 	uint32_t elemStride;  /* bytes between elements */
+	int8_t   set;         /* -1: push constants, otherwise the uniform buffer's set */
+	uint8_t  binding;     /* uniform buffer binding */
+	uint8_t  scalar;      /* source data: 0 float, 1 int32, 2 uint32 */
 } VkvUniformMap;
 
 typedef struct VkShaderModule_T {
@@ -334,6 +337,9 @@ typedef struct VkShaderModule_T {
 	VkvAttributeBindingVITA  *attrs;  /* names are owned copies */
 	uint32_t                  uniCount;
 	VkvUniformBindingVITA    *unis;
+	int8_t                   *uniSet;     /* per uniform: -1 push constants, else uniform buffer set */
+	uint8_t                  *uniBinding;
+	uint8_t                  *uniScalar;
 	/* program per stage, compiled/registered lazily */
 	SceGxmProgram            *prog[VKV_STAGE_COUNT];
 	bool                      progOwned[VKV_STAGE_COUNT];
@@ -436,7 +442,7 @@ typedef struct VkFramebuffer_T {
 	SceGxmRenderTarget *rt;
 } VkvFramebuffer;
 
-#define VKV_MAX_UNIFORM_MAP 32
+#define VKV_MAX_UNIFORM_MAP 64
 
 typedef struct VkPipeline_T {
 	VkvObject                 obj;
