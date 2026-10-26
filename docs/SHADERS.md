@@ -38,12 +38,14 @@ Nothing from the sections below has to be done by hand:
 - Integer push constant and uniform buffer members are converted to float on
   upload and back to int in the shader.
 - Integer varyings (`flat out int`) are carried as floats and rounded.
+- Separate `texture2D` / `sampler` objects are combined. Every image and
+  sampler pair used in the shader gets its own texture unit, and VkVita
+  builds the texture from both descriptors at draw time.
 
 Not supported (the translation fails with a message naming the resource):
-separate `texture2D` / `sampler` objects, sampler arrays, storage buffers and
-images, subpass inputs, `gl_VertexIndex` / `gl_InstanceIndex`, compute and
-geometry stages. Struct members inside uniform blocks are declared but not
-fed yet.
+sampler arrays, storage buffers and images, subpass inputs,
+`gl_VertexIndex` / `gl_InstanceIndex`, compute and geometry stages. Struct
+members inside uniform blocks are declared but not fed yet.
 
 With `debug = shaders` the log contains the generated Cg (lines starting with
 `cg-src[name:line]`), which is what to look at when the Cg compiler reports
@@ -134,8 +136,9 @@ unit `n`, so declare the sampler with `: TEXUNITn`. Samplers used by the
 vertex shader are bound for the vertex stage too. Bindings from all bound
 sets share the 16 units, so keep binding numbers unique across sets.
 
-Separate `SAMPLER` / `SAMPLED_IMAGE` descriptors are not supported, because
-Cg samplers always combine both.
+Separate `SAMPLER` / `SAMPLED_IMAGE` descriptors only work with SPIR-V
+shaders, because Cg samplers always combine both and a hand written Cg
+shader has no way to say which two descriptors to pair.
 
 ### Uniform buffers (descriptor binding -> BUFFER[n])
 

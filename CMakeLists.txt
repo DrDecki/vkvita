@@ -72,6 +72,7 @@ add_library(vkvita STATIC
   src/vkv_cmd.c
   src/vkv_queue.c
   src/vkv_ff.c
+  src/vkv_query.c
   src/vkv_dispatch.c
 )
 add_library(VkVita::vkvita ALIAS vkvita)

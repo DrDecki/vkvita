@@ -17,13 +17,15 @@ function(vkv_add_sample name title titleid)
     target_link_libraries(${name} PRIVATE vkv_sample_common)
   endif()
   vita_create_self(${name}.self ${name})
+  # every sample has its own LiveArea, made by tools/gen_livearea.py
+  set(sys ${CMAKE_CURRENT_SOURCE_DIR}/sce_sys/${name})
   vita_create_vpk(${name}.vpk ${titleid} ${name}.self
     VERSION 01.00
     NAME "${title}"
-    FILE ${CMAKE_CURRENT_SOURCE_DIR}/sce_sys/icon0.png sce_sys/icon0.png
-    FILE ${CMAKE_CURRENT_SOURCE_DIR}/sce_sys/livearea/contents/bg.png sce_sys/livearea/contents/bg.png
-    FILE ${CMAKE_CURRENT_SOURCE_DIR}/sce_sys/livearea/contents/startup.png sce_sys/livearea/contents/startup.png
-    FILE ${CMAKE_CURRENT_SOURCE_DIR}/sce_sys/livearea/contents/template.xml sce_sys/livearea/contents/template.xml
+    FILE ${sys}/icon0.png sce_sys/icon0.png
+    FILE ${sys}/livearea/contents/bg.png sce_sys/livearea/contents/bg.png
+    FILE ${sys}/livearea/contents/startup.png sce_sys/livearea/contents/startup.png
+    FILE ${sys}/livearea/contents/template.xml sce_sys/livearea/contents/template.xml
   )
 endfunction()
 
@@ -32,4 +34,5 @@ vkv_add_sample(textured_cube  "VkVita Cube"     VKVT00002 USE_COMMON)
 vkv_add_sample(fixed_function "VkVita FixedFn"  VKVT00003 USE_COMMON)
 if(VKV_WITH_SPIRV)
   vkv_add_sample(spirv_cube   "VkVita SPIR-V"   VKVT00004 USE_COMMON)
+  vkv_add_sample(gpu_features "VkVita Features" VKVT00005 USE_COMMON)
 endif()

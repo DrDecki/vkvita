@@ -45,6 +45,7 @@ void vkv_vfp_sceGxmDepthStencilSurfaceSetBackgroundDepth(SceGxmDepthStencilSurfa
 #define VKV_MAX_PUSH        128
 #define VKV_MAX_DYNAMIC     16
 #define VKV_NOTIF_SLOTS     512
+#define VKV_VIS_SLOTS       1024
 #define VKV_CDRAM_ALIGN     (256 * 1024)
 #define VKV_RAM_ALIGN       4096
 
@@ -57,7 +58,7 @@ enum {
 	VKV_MAGIC_SHADER, VKV_MAGIC_PLAYOUT, VKV_MAGIC_DSLAYOUT, VKV_MAGIC_DPOOL, VKV_MAGIC_DSET,
 	VKV_MAGIC_RPASS, VKV_MAGIC_FBUF, VKV_MAGIC_PIPELINE, VKV_MAGIC_CPOOL, VKV_MAGIC_CMDBUF,
 	VKV_MAGIC_FENCE, VKV_MAGIC_SEMAPHORE, VKV_MAGIC_SURFACE, VKV_MAGIC_SWAPCHAIN, VKV_MAGIC_PCACHE,
-	VKV_MAGIC_FF, VKV_MAGIC_DEAD = 0xDEADBEEF
+	VKV_MAGIC_FF, VKV_MAGIC_QPOOL, VKV_MAGIC_EVENT, VKV_MAGIC_DEAD = 0xDEADBEEF
 };
 
 typedef struct VkvObject {
@@ -167,6 +168,8 @@ typedef struct VkvFormatInfo {
 	SceGxmAttributeFormat attrib;
 	SceGxmOutputRegisterFormat outReg;
 	SceGxmTransferFormat xfer;
+	uint8_t             block;
+	uint8_t             srgb;
 } VkvFormatInfo;
 
 const VkvFormatInfo *vkv_format(VkFormat f);
@@ -227,7 +230,34 @@ struct VkDevice_T {
 	bool                  gpuBusy;
 	bool                  transferPending;
 	struct VkSwapchainKHR_T *swapchain;
+
+	VkvGpuBlock           visBuf;
+	bool                  visBufSet;
+	uint8_t               visUsed[VKV_VIS_SLOTS];
 };
+
+#define VKV_GPU_CORES 4
+
+typedef struct VkQueryPool_T {
+	VkvObject   obj;
+	VkQueryType type;
+	uint32_t    count;
+	uint32_t    visBase;
+	uint64_t   *values;
+	uint8_t    *written;
+} VkvQueryPool;
+
+typedef struct VkEvent_T {
+	VkvObject obj;
+	bool      set;
+} VkvEvent;
+
+#define VKV_VIS_STRIDE (VKV_VIS_SLOTS * 4)
+
+bool vkv_vis_init(struct VkDevice_T *dev);
+void vkv_query_begin(struct VkDevice_T *dev, SceGxmContext *ctx, VkvQueryPool *p, uint32_t q);
+void vkv_query_end(SceGxmContext *ctx);
+void vkv_query_reset(struct VkDevice_T *dev, VkvQueryPool *p, uint32_t first, uint32_t count);
 
 typedef struct VkDeviceMemory_T {
 	VkvObject     obj;
@@ -247,28 +277,48 @@ typedef struct VkBuffer_T {
 	uint8_t           *ptr;
 } VkvBuffer;
 
+#define VKV_MAX_LEVELS 13
+
 typedef struct VkImage_T {
 	VkvObject             obj;
 	VkFormat              format;
 	const VkvFormatInfo  *fi;
 	uint32_t              width, height;
 	uint32_t              mipLevels, arrayLayers;
+	uint32_t              levels, layers;
 	VkImageUsageFlags     usage;
 	VkImageTiling         tiling;
 	uint32_t              rowPitch;
 	uint32_t              alignedW, alignedH;
+	uint32_t              levelOffset[VKV_MAX_LEVELS];
+	uint32_t              levelPitch[VKV_MAX_LEVELS];
+	uint32_t              layerSize;
 	uint32_t              size, alignment;
 	VkvMemory            *mem;
 	uint8_t              *ptr;
 	SceGxmSyncObject     *sync;
 	bool                  swapchain;
+	bool                  cube;
+	bool                  swizzled;
 	bool                  written;
+	bool                  pendingDepthClear;
+	float                 clearDepth;
+	uint32_t              clearStencil;
 } VkvImage;
+
+uint32_t vkv_swizzle_index(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+uint32_t vkv_image_level_width(const VkvImage *img, uint32_t level);
+uint32_t vkv_image_level_height(const VkvImage *img, uint32_t level);
+void     vkv_image_level_elems(const VkvImage *img, uint32_t level, uint32_t *ew, uint32_t *eh);
+uint8_t *vkv_image_level_ptr(const VkvImage *img, uint32_t level, uint32_t layer);
+uint8_t *vkv_image_elem(const VkvImage *img, uint32_t level, uint32_t layer, uint32_t ex, uint32_t ey);
 
 typedef struct VkImageView_T {
 	VkvObject      obj;
 	VkvImage      *image;
 	VkFormat       format;
+	uint32_t       baseLevel, levelCount, baseLayer;
+	bool           cube;
 	SceGxmTexture  tex;
 	bool           texValid;
 } VkvImageView;
@@ -276,12 +326,22 @@ typedef struct VkImageView_T {
 typedef struct VkSampler_T {
 	VkvObject              obj;
 	SceGxmTextureFilter    minFilter, magFilter;
+	SceGxmTextureMipFilter mipFilter;
 	SceGxmTextureAddrMode  addrU, addrV;
+	uint32_t               maxLevels;
 } VkvSampler;
 
-void vkv_texture_apply_sampler(SceGxmTexture *tex, const VkvSampler *s);
+void vkv_texture_apply_sampler(SceGxmTexture *tex, const VkvSampler *s, uint32_t levels);
 
 typedef enum VkvStage { VKV_STAGE_VERTEX = 0, VKV_STAGE_FRAGMENT = 1, VKV_STAGE_COUNT } VkvStage;
+
+typedef struct VkvTexBinding {
+	uint32_t unit;
+	int32_t  imageSet;
+	uint32_t imageBinding;
+	int32_t  samplerSet;
+	uint32_t samplerBinding;
+} VkvTexBinding;
 
 typedef struct VkvUniformMap {
 	const SceGxmProgramParameter *param;
@@ -315,6 +375,9 @@ typedef struct VkShaderModule_T {
 	struct VkDevice_T        *device;
 	uint32_t                  refs;
 	bool                      destroyed;
+	VkvTexBinding            *texb[VKV_STAGE_COUNT];
+	uint32_t                  texCount[VKV_STAGE_COUNT];
+	bool                      texExplicit[VKV_STAGE_COUNT];
 } VkvShaderModule;
 
 void vkv_shader_retain(VkvShaderModule *m);
@@ -338,6 +401,7 @@ typedef struct VkvDslBinding {
 	uint32_t          count;
 	uint32_t          first;
 	uint32_t          dynIndex;
+	struct VkSampler_T **immutable;
 } VkvDslBinding;
 
 typedef struct VkDescriptorSetLayout_T {
@@ -435,6 +499,9 @@ typedef struct VkPipeline_T {
 	uint32_t                  vDefaultSize, fDefaultSize;
 
 	uint32_t                  fSamplerMask, vSamplerMask, bufferMask;
+	const VkvTexBinding      *texb[VKV_STAGE_COUNT];
+	uint32_t                  texCount[VKV_STAGE_COUNT];
+	bool                      texExplicit[VKV_STAGE_COUNT];
 
 	SceGxmPrimitiveType       prim;
 	bool                      primSupported;
@@ -455,6 +522,7 @@ typedef struct VkPipeline_T {
 	VkViewport                viewport;
 	VkRect2D                  scissor;
 	bool                      hasViewport, hasScissor;
+	float                     lineWidth;
 } VkvPipeline;
 
 enum {
@@ -463,7 +531,8 @@ enum {
 	VKV_DYN_DEPTH_BIAS = 1u << 2,
 	VKV_DYN_STENCIL_CMP= 1u << 3,
 	VKV_DYN_STENCIL_WR = 1u << 4,
-	VKV_DYN_STENCIL_REF= 1u << 5
+	VKV_DYN_STENCIL_REF= 1u << 5,
+	VKV_DYN_LINE_WIDTH = 1u << 6
 };
 
 SceGxmVertexProgram *vkv_pipeline_vertex_program(VkvPipeline *p, bool index32);
@@ -494,7 +563,18 @@ typedef enum VkvCmdType {
 	VKV_CMD_CLEAR_ATTACH,
 	VKV_CMD_CLEAR_COLOR_IMAGE,
 	VKV_CMD_BARRIER,
-	VKV_CMD_FF_DRAW
+	VKV_CMD_FF_DRAW,
+	VKV_CMD_COPY_IMAGE,
+	VKV_CMD_BLIT_IMAGE,
+	VKV_CMD_CLEAR_DS_IMAGE,
+	VKV_CMD_DRAW_INDIRECT,
+	VKV_CMD_EXECUTE,
+	VKV_CMD_LINE_WIDTH,
+	VKV_CMD_QUERY_BEGIN,
+	VKV_CMD_QUERY_END,
+	VKV_CMD_QUERY_RESET,
+	VKV_CMD_TIMESTAMP,
+	VKV_CMD_SET_EVENT
 } VkvCmdType;
 
 typedef struct VkvCmd {
@@ -532,7 +612,19 @@ typedef struct VkvCmdFillBuffer { VkvCmd h; VkvBuffer *dst; uint32_t off, size, 
 typedef struct VkvCmdClearAttach {
 	VkvCmd h; uint32_t na, nr; VkClearAttachment a[8]; VkClearRect r[];
 } VkvCmdClearAttach;
-typedef struct VkvCmdClearColorImage { VkvCmd h; VkvImage *img; VkClearColorValue c; } VkvCmdClearColorImage;
+typedef struct VkvCmdClearColorImage {
+	VkvCmd h; VkvImage *img; VkClearColorValue c; uint32_t n; VkImageSubresourceRange ranges[];
+} VkvCmdClearColorImage;
+typedef struct VkvCmdCopyImage { VkvCmd h; VkvImage *src, *dst; uint32_t n; VkImageCopy r[]; } VkvCmdCopyImage;
+typedef struct VkvCmdBlitImage { VkvCmd h; VkvImage *src, *dst; VkFilter filter; uint32_t n; VkImageBlit r[]; } VkvCmdBlitImage;
+typedef struct VkvCmdClearDSImage { VkvCmd h; VkvImage *img; VkClearDepthStencilValue v; } VkvCmdClearDSImage;
+typedef struct VkvCmdDrawIndirect {
+	VkvCmd h; VkvBuffer *buf; uint32_t off, count, stride; bool indexed;
+} VkvCmdDrawIndirect;
+typedef struct VkvCmdExecute { VkvCmd h; uint32_t n; struct VkCommandBuffer_T *cbs[]; } VkvCmdExecute;
+typedef struct VkvCmdLineWidth { VkvCmd h; float width; } VkvCmdLineWidth;
+typedef struct VkvCmdQuery { VkvCmd h; VkvQueryPool *pool; uint32_t first, count; } VkvCmdQuery;
+typedef struct VkvCmdSetEvent { VkvCmd h; VkvEvent *event; bool value; } VkvCmdSetEvent;
 
 typedef struct VkvCmdFFDraw {
 	VkvCmd               h;
@@ -563,6 +655,7 @@ struct VkCommandBuffer_T {
 	VkvRenderPass            *rp;
 	uint32_t                  sceneCount;
 	bool                      oom;
+	bool                      secondary;
 };
 
 typedef struct VkCommandPool_T {
