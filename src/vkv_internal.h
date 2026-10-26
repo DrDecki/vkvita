@@ -18,6 +18,15 @@
 #include <psp2/kernel/processmgr.h>
 #include <psp2/kernel/threadmgr.h>
 
+#if defined(__ARM_PCS) && !defined(__ARM_PCS_VFP)
+void vkv_vfp_sceGxmSetViewport(SceGxmContext *context, float xOffset, float xScale, float yOffset, float yScale,
+                               float zOffset, float zScale) __asm__("sceGxmSetViewport") __attribute__((pcs("aapcs-vfp")));
+void vkv_vfp_sceGxmDepthStencilSurfaceSetBackgroundDepth(SceGxmDepthStencilSurface *surface, float backgroundDepth)
+	__asm__("sceGxmDepthStencilSurfaceSetBackgroundDepth") __attribute__((pcs("aapcs-vfp")));
+#define sceGxmSetViewport vkv_vfp_sceGxmSetViewport
+#define sceGxmDepthStencilSurfaceSetBackgroundDepth vkv_vfp_sceGxmDepthStencilSurfaceSetBackgroundDepth
+#endif
+
 #include "vkvita/vkvita.h"
 #include "vkvita/vkvita_ff.h"
 

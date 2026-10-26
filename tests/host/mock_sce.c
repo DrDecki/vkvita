@@ -624,7 +624,10 @@ int sceGxmTransferFill(uint32_t color, SceGxmTransferFormat fmt, void *dst, uint
 	uint32_t h, int32_t stride, SceGxmSyncObject *sync, uint32_t flags, const SceGxmNotification *n) {
 	(void)sync; (void)flags; (void)n;
 	if (g_inScene) mock_fail("TransferFill inside a scene");
-	unsigned bpp = fmt == SCE_GXM_TRANSFER_FORMAT_RAW32 ? 4 : fmt == SCE_GXM_TRANSFER_FORMAT_RAW16 ? 2 : 0;
+	if (fmt == SCE_GXM_TRANSFER_FORMAT_RAW16 || fmt == SCE_GXM_TRANSFER_FORMAT_RAW32 ||
+	    fmt == SCE_GXM_TRANSFER_FORMAT_RAW64 || fmt == SCE_GXM_TRANSFER_FORMAT_RAW128)
+		return SCE_GXM_ERROR_UNSUPPORTED;
+	unsigned bpp = fmt == SCE_GXM_TRANSFER_FORMAT_U8U8U8U8_ABGR ? 4 : 0;
 	if (!bpp) { mock_fail("TransferFill format 0x%x", fmt); return -1; }
 	for (uint32_t r = 0; r < h; r++) {
 		uint8_t *row = (uint8_t *)dst + (size_t)(y + r) * stride + x * bpp;

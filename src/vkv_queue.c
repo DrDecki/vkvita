@@ -105,18 +105,19 @@ static void vkv_clear_color_rect(VkvReplay *R, VkvImage *img, const VkClearColor
 	uint32_t bpp = vkv_pack_color(img, c, texel);
 	g_vkv.cur.clears++;
 
-	SceGxmTransferFormat xf = img->fi->xfer;
-	if (!vkv_compat(VKV_COMPAT_CPU_CLEAR) && img->sync && (bpp == 4 || bpp == 2) && xf) {
+	static bool s_fillBroken;
+	if (!vkv_compat(VKV_COMPAT_CPU_CLEAR) && !s_fillBroken && img->sync && bpp == 4) {
 		uint32_t value = 0;
 		memcpy(&value, texel, bpp);
-		int r = sceGxmTransferFill(value, xf, img->ptr, x, y, w, h, (int32_t)img->rowPitch, img->sync,
-		                           SCE_GXM_TRANSFER_FRAGMENT_SYNC, NULL);
+		int r = sceGxmTransferFill(value, SCE_GXM_TRANSFER_FORMAT_U8U8U8U8_ABGR, img->ptr, x, y, w, h,
+		                           (int32_t)img->rowPitch, img->sync, SCE_GXM_TRANSFER_FRAGMENT_SYNC, NULL);
 		if (r >= 0) {
 			R->dev->usedTransfer = true;
 			R->dev->transferPending = true;
 			return;
 		}
-		VKV_WARN("sceGxmTransferFill failed 0x%08X, falling back to CPU clear", (unsigned)r);
+		s_fillBroken = true;
+		VKV_WARN("sceGxmTransferFill failed 0x%08X, using CPU clears from now on", (unsigned)r);
 	}
 	/* CPU path: the GPU must not be using the image */
 	if (R->dev->gpuBusy) vkv_device_wait_gpu(R->dev);
