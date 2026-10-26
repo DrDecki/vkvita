@@ -7,17 +7,14 @@ so everything actually renders on the Vita's GPU.
 It's a static library (`libvkvita.a`) you link into your homebrew. No loader,
 no ICD, the functions are just implemented directly.
 
-I started this because I wanted to port an open source Vulkan game to the
-Vita (vkQuake2 is the plan) and there was nothing that let me do that.
-
 ## Current state
 
-This is version 0.1.0, so please keep your expectations low for now.
+There are no releases or version numbers. Whatever is on `main` is the
+current build, so think of it as a nightly.
 
-The library and all samples build with VitaSDK, and they run fine on a PC
-against a mock of the Vita APIs (with AddressSanitizer). **It has not been
-tested on a real Vita yet.** I'm pretty sure the first run on hardware will
-show some bugs. That's also why there are so many debug options built in.
+All samples run on a real PS Vita at a steady 60 FPS. Expect bugs anyway,
+most of the Vulkan surface hasn't been hit by a real game yet. That's also
+why there are so many debug options built in.
 
 If you try it on your console, I'd love to hear how it went, good or bad.
 
@@ -40,7 +37,8 @@ subpass. The Vita just isn't built for most of that.
 
 ## Building
 
-You need [VitaSDK](https://vitasdk.org) and CMake 3.16 or newer.
+You need [VitaSDK](https://vitasdk.org) and CMake 3.16 or newer. Both the
+normal (hardfp) and the softfp VitaSDK work.
 
 ```sh
 export VITASDK=/usr/local/vitasdk
@@ -74,7 +72,7 @@ cmake -S . -B build-rel -DVKV_ENABLE_DEBUG=OFF -DVKV_BUILD_SAMPLES=OFF
 With CMake:
 
 ```cmake
-find_package(VkVita 0.1 REQUIRED)
+find_package(VkVita REQUIRED)
 target_link_libraries(my_game PRIVATE VkVita::vkvita)
 ```
 
