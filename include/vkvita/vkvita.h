@@ -100,7 +100,8 @@ VkResult vkvCreateDisplaySurface(VkInstance instance, VkSurfaceKHR *surface);
 typedef enum VkvShaderSource {
 	VKV_SHADER_SOURCE_AUTO = 0,
 	VKV_SHADER_SOURCE_GXP  = 1,
-	VKV_SHADER_SOURCE_CG   = 2
+	VKV_SHADER_SOURCE_CG   = 2,
+	VKV_SHADER_SOURCE_SPIRV = 3
 } VkvShaderSource;
 
 typedef struct VkvAttributeBindingVITA {

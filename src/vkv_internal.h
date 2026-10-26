@@ -289,6 +289,9 @@ typedef struct VkvUniformMap {
 	uint32_t comps;
 	uint32_t elems;
 	uint32_t elemStride;
+	int8_t   set;
+	uint8_t  binding;
+	uint8_t  scalar;
 } VkvUniformMap;
 
 typedef struct VkShaderModule_T {
@@ -302,6 +305,9 @@ typedef struct VkShaderModule_T {
 	VkvAttributeBindingVITA  *attrs;
 	uint32_t                  uniCount;
 	VkvUniformBindingVITA    *unis;
+	int8_t                   *uniSet;
+	uint8_t                  *uniBinding;
+	uint8_t                  *uniScalar;
 	SceGxmProgram            *prog[VKV_STAGE_COUNT];
 	bool                      progOwned[VKV_STAGE_COUNT];
 	SceGxmShaderPatcherId     pid[VKV_STAGE_COUNT];
@@ -400,7 +406,7 @@ typedef struct VkFramebuffer_T {
 	SceGxmRenderTarget *rt;
 } VkvFramebuffer;
 
-#define VKV_MAX_UNIFORM_MAP 32
+#define VKV_MAX_UNIFORM_MAP 64
 
 typedef struct VkPipeline_T {
 	VkvObject                 obj;

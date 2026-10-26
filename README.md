@@ -1,16 +1,16 @@
 # VkVita
 
-VkVita is a wrapper between Vulkan and sceGxm. It lets you use a large part of the Vulkan 1.0 API on the PS Vita, with everything rendered on the SGX543MP4+ GPU. It is a static library (`libvkvita.a`) that implements the `vk*` functions directly, so there is no loader and no ICD.
+VkVita is a wrapper between Vulkan and sceGxm. It lets you use a large part of the Vulkan 1.0 API on the PS Vita, with everything rendered on the SGX543MP4+ GPU. It is a static library (`libvkvita.a`) that implements the `vk*` functions directly, so there is no loader and no ICD. SPIR-V shaders are translated to Cg and compiled on the console.
 
 There are no releases. Whatever is on `main` is the current build.
 
 ## Prerequisites
 
-To compile Cg shaders at runtime, VkVita needs vitaShaRK and a decrypted `libshacccg.suprx` in `ur0:data/` on your console. You can install it with ShaRKBR33D or the PIB configuration tool. Most vitaGL ports need the same file, so you probably have it already.
+To compile SPIR-V or Cg shaders at runtime, VkVita needs vitaShaRK and a decrypted `libshacccg.suprx` in `ur0:data/` on your console. You can install it with ShaRKBR33D or the PIB configuration tool. Most vitaGL ports need the same file, so you probably have it already.
 
 If you build with `VKV_WITH_SHARK=OFF`, you can ship precompiled GXP shaders instead and don't need the file at all.
 
-SPIR-V shaders are not supported yet. Shaders have to be passed as Cg source or GXP binaries, see [docs/SHADERS.md](docs/SHADERS.md).
+Not every SPIR-V feature has a GXM counterpart. What works and what doesn't is listed in [docs/SHADERS.md](docs/SHADERS.md).
 
 ## Help and Troubleshooting
 
@@ -33,6 +33,7 @@ These CMake options are available:
 | Option | Description |
 |---|---|
 | `VKV_WITH_SHARK=AUTO` | Runtime Cg compiler through vitaShaRK. `AUTO` uses it if it's installed, `ON` requires it, `OFF` removes it |
+| `VKV_WITH_SPIRV=ON` | SPIR-V support through the bundled SPIRV-Cross. Adds about 850 KB of code and needs `-lstdc++` |
 | `VKV_ENABLE_DEBUG=ON` | Compiles in logging, validation and profiling. `OFF` removes them for release builds |
 | `VKV_BUILD_SAMPLES=ON` | Builds the sample VPKs |
 | `VKV_INSTALL_VULKAN_HEADERS=ON` | Installs the bundled Khronos Vulkan headers |
@@ -107,7 +108,7 @@ With a Makefile, use pkg-config like `samples/standalone_template/Makefile` does
 Most Vulkan code works unchanged. The parts that are different on the Vita:
 
 - **Surface:** use `VK_EXT_headless_surface` or `vkvCreateDisplaySurface()`. The swapchain is always 960x544.
-- **Shaders:** Cg source or GXP instead of SPIR-V.
+- **Shaders:** SPIR-V works for the usual vertex and fragment shaders. Storage buffers, separate samplers and compute do not exist on GXM.
 - **Limits:** one color attachment, one subpass, no compute, no mipmaps, no MSAA. The full list is in [docs/COVERAGE.md](docs/COVERAGE.md).
 
 There is also a small fixed function layer (`vkvita_ff.h`) for old GL 1.x style code, see [docs/FIXED_FUNCTION.md](docs/FIXED_FUNCTION.md).
@@ -121,8 +122,13 @@ Samples can be found in the `samples` folder.
 | `hello_triangle` | The complete Vulkan flow with no helpers |
 | `textured_cube` | Textures, depth, instancing, push constants and debug toggles on buttons |
 | `fixed_function` | GL 1.x style drawing through the fixed function layer |
+| `spirv_cube` | The cube with GLSL shaders compiled to SPIR-V, push constants, a uniform buffer and a texture |
 | `standalone_template` | A starting point for your own project |
+
+## Tools
+
+`tools/spirv2cg` translates a SPIR-V file into the Cg VkVita would generate, so you can check a shader on the PC. Build it with `tools/build_spirv2cg.sh`.
 
 ## License
 
-VkVita is licensed under the GPL 3.0 (or any later version), see `LICENSE`. The bundled Vulkan headers are Apache 2.0 or MIT, and vitaShaRK is LGPL 3.0.
+VkVita is licensed under the GPL 3.0 (or any later version), see `LICENSE`. The bundled Vulkan headers are Apache 2.0 or MIT, SPIRV-Cross is Apache 2.0, and vitaShaRK is LGPL 3.0.
