@@ -51,6 +51,7 @@ void vkv_vfp_sceGxmDepthStencilSurfaceSetBackgroundDepth(SceGxmDepthStencilSurfa
 #define VKV_MAX_PUSH        128  /* push constant bytes */
 #define VKV_MAX_DYNAMIC     16   /* dynamic descriptors per set */
 #define VKV_NOTIF_SLOTS     512
+#define VKV_VIS_SLOTS       1024 /* occlusion query counters */
 #define VKV_CDRAM_ALIGN     (256 * 1024)
 #define VKV_RAM_ALIGN       4096
 
@@ -66,7 +67,7 @@ enum {
 	VKV_MAGIC_SHADER, VKV_MAGIC_PLAYOUT, VKV_MAGIC_DSLAYOUT, VKV_MAGIC_DPOOL, VKV_MAGIC_DSET,
 	VKV_MAGIC_RPASS, VKV_MAGIC_FBUF, VKV_MAGIC_PIPELINE, VKV_MAGIC_CPOOL, VKV_MAGIC_CMDBUF,
 	VKV_MAGIC_FENCE, VKV_MAGIC_SEMAPHORE, VKV_MAGIC_SURFACE, VKV_MAGIC_SWAPCHAIN, VKV_MAGIC_PCACHE,
-	VKV_MAGIC_FF, VKV_MAGIC_DEAD = 0xDEADBEEF
+	VKV_MAGIC_FF, VKV_MAGIC_QPOOL, VKV_MAGIC_EVENT, VKV_MAGIC_DEAD = 0xDEADBEEF
 };
 
 typedef struct VkvObject {
@@ -179,7 +180,7 @@ typedef struct VkvPool {
 /* ------------------------------------------------------------------------ */
 typedef struct VkvFormatInfo {
 	VkFormat            vk;
-	uint8_t             bpp;          /* bytes per texel, 0 = unsupported */
+	uint8_t             bpp;          /* bytes per texel (per block if compressed), 0 = unsupported */
 	uint8_t             isDepth;
 	uint8_t             renderable;   /* usable as a color attachment */
 	uint8_t             attribComps;  /* vertex attribute components, 0 = not a vertex format */
@@ -188,6 +189,8 @@ typedef struct VkvFormatInfo {
 	SceGxmAttributeFormat attrib;
 	SceGxmOutputRegisterFormat outReg;
 	SceGxmTransferFormat xfer;
+	uint8_t             block;        /* bytes per 4x4 block for compressed formats, else 0 */
+	uint8_t             srgb;
 } VkvFormatInfo;
 
 const VkvFormatInfo *vkv_format(VkFormat f);
@@ -253,7 +256,35 @@ struct VkDevice_T {
 	bool                  gpuBusy;        /* scenes submitted since last finish */
 	bool                  transferPending;/* next scene must wait for a transfer fill */
 	struct VkSwapchainKHR_T *swapchain;  /* the one display swapchain */
+
+	/* occlusion queries: GXM visibility buffer, one counter per query and GPU core */
+	VkvGpuBlock           visBuf;
+	bool                  visBufSet;
+	uint8_t               visUsed[VKV_VIS_SLOTS];
 };
+
+#define VKV_GPU_CORES 4
+
+typedef struct VkQueryPool_T {
+	VkvObject   obj;
+	VkQueryType type;
+	uint32_t    count;
+	uint32_t    visBase;     /* occlusion: first visibility index */
+	uint64_t   *values;      /* timestamps */
+	uint8_t    *written;
+} VkvQueryPool;
+
+typedef struct VkEvent_T {
+	VkvObject obj;
+	bool      set;
+} VkvEvent;
+
+#define VKV_VIS_STRIDE (VKV_VIS_SLOTS * 4)
+
+bool vkv_vis_init(struct VkDevice_T *dev);
+void vkv_query_begin(struct VkDevice_T *dev, SceGxmContext *ctx, VkvQueryPool *p, uint32_t q);
+void vkv_query_end(SceGxmContext *ctx);
+void vkv_query_reset(struct VkDevice_T *dev, VkvQueryPool *p, uint32_t first, uint32_t count);
 
 /* ------------------------------------------------------------------------ */
 /* Resources                                                                */
@@ -276,28 +307,48 @@ typedef struct VkBuffer_T {
 	uint8_t           *ptr;
 } VkvBuffer;
 
+#define VKV_MAX_LEVELS 13
+
 typedef struct VkImage_T {
 	VkvObject             obj;
 	VkFormat              format;
 	const VkvFormatInfo  *fi;
 	uint32_t              width, height;
-	uint32_t              mipLevels, arrayLayers;
+	uint32_t              mipLevels, arrayLayers; /* as requested */
+	uint32_t              levels, layers;         /* as stored */
 	VkImageUsageFlags     usage;
 	VkImageTiling         tiling;
-	uint32_t              rowPitch;    /* bytes */
+	uint32_t              rowPitch;    /* level 0, bytes */
 	uint32_t              alignedW, alignedH; /* depth: tile aligned */
+	uint32_t              levelOffset[VKV_MAX_LEVELS];
+	uint32_t              levelPitch[VKV_MAX_LEVELS]; /* bytes per row of texels or 4x4 blocks */
+	uint32_t              layerSize;
 	uint32_t              size, alignment;
 	VkvMemory            *mem;
 	uint8_t              *ptr;
 	SceGxmSyncObject     *sync;        /* for color attachments */
 	bool                  swapchain;
+	bool                  cube;
+	bool                  swizzled;    /* GXM swizzled layout (cube faces, compressed formats) */
 	bool                  written;     /* has been rendered to (for loadOp LOAD on depth) */
+	bool                  pendingDepthClear;
+	float                 clearDepth;
+	uint32_t              clearStencil;
 } VkvImage;
+
+uint32_t vkv_swizzle_index(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+uint32_t vkv_image_level_width(const VkvImage *img, uint32_t level);
+uint32_t vkv_image_level_height(const VkvImage *img, uint32_t level);
+void     vkv_image_level_elems(const VkvImage *img, uint32_t level, uint32_t *ew, uint32_t *eh);
+uint8_t *vkv_image_level_ptr(const VkvImage *img, uint32_t level, uint32_t layer);
+uint8_t *vkv_image_elem(const VkvImage *img, uint32_t level, uint32_t layer, uint32_t ex, uint32_t ey);
 
 typedef struct VkImageView_T {
 	VkvObject      obj;
 	VkvImage      *image;
 	VkFormat       format;
+	uint32_t       baseLevel, levelCount, baseLayer;
+	bool           cube;
 	SceGxmTexture  tex;
 	bool           texValid;
 } VkvImageView;
@@ -305,15 +356,27 @@ typedef struct VkImageView_T {
 typedef struct VkSampler_T {
 	VkvObject              obj;
 	SceGxmTextureFilter    minFilter, magFilter;
+	SceGxmTextureMipFilter mipFilter;
 	SceGxmTextureAddrMode  addrU, addrV;
+	uint32_t               maxLevels;
 } VkvSampler;
 
-void vkv_texture_apply_sampler(SceGxmTexture *tex, const VkvSampler *s);
+void vkv_texture_apply_sampler(SceGxmTexture *tex, const VkvSampler *s, uint32_t levels);
 
 /* ------------------------------------------------------------------------ */
 /* Shaders                                                                  */
 /* ------------------------------------------------------------------------ */
 typedef enum VkvStage { VKV_STAGE_VERTEX = 0, VKV_STAGE_FRAGMENT = 1, VKV_STAGE_COUNT } VkvStage;
+
+/* GXM texture unit <- image (and sampler) descriptor. samplerSet -1: the image
+ * descriptor is a combined image sampler; -2: no sampler. */
+typedef struct VkvTexBinding {
+	uint32_t unit;
+	int32_t  imageSet;
+	uint32_t imageBinding;
+	int32_t  samplerSet;
+	uint32_t samplerBinding;
+} VkvTexBinding;
 
 typedef struct VkvUniformMap {
 	const SceGxmProgramParameter *param;
@@ -348,6 +411,10 @@ typedef struct VkShaderModule_T {
 	struct VkDevice_T        *device;
 	uint32_t                  refs;      /* pipelines using this module */
 	bool                      destroyed; /* vkDestroyShaderModule was called */
+	/* SPIR-V: texture unit table per stage (units are not tied to binding numbers) */
+	VkvTexBinding            *texb[VKV_STAGE_COUNT];
+	uint32_t                  texCount[VKV_STAGE_COUNT];
+	bool                      texExplicit[VKV_STAGE_COUNT];
 } VkvShaderModule;
 
 void vkv_shader_retain(VkvShaderModule *m);
@@ -374,6 +441,7 @@ typedef struct VkvDslBinding {
 	uint32_t          count;
 	uint32_t          first;     /* index into the set's descriptor array */
 	uint32_t          dynIndex;  /* for dynamic buffers: index into dynamic offsets */
+	struct VkSampler_T **immutable; /* immutable samplers, or NULL */
 } VkvDslBinding;
 
 typedef struct VkDescriptorSetLayout_T {
@@ -474,6 +542,9 @@ typedef struct VkPipeline_T {
 
 	/* reflection for validation */
 	uint32_t                  fSamplerMask, vSamplerMask, bufferMask;
+	const VkvTexBinding      *texb[VKV_STAGE_COUNT];   /* explicit texture units (SPIR-V), else NULL */
+	uint32_t                  texCount[VKV_STAGE_COUNT];
+	bool                      texExplicit[VKV_STAGE_COUNT];
 
 	/* fixed state */
 	SceGxmPrimitiveType       prim;
@@ -495,6 +566,7 @@ typedef struct VkPipeline_T {
 	VkViewport                viewport;
 	VkRect2D                  scissor;
 	bool                      hasViewport, hasScissor;
+	float                     lineWidth;
 } VkvPipeline;
 
 enum {
@@ -503,7 +575,8 @@ enum {
 	VKV_DYN_DEPTH_BIAS = 1u << 2,
 	VKV_DYN_STENCIL_CMP= 1u << 3,
 	VKV_DYN_STENCIL_WR = 1u << 4,
-	VKV_DYN_STENCIL_REF= 1u << 5
+	VKV_DYN_STENCIL_REF= 1u << 5,
+	VKV_DYN_LINE_WIDTH = 1u << 6
 };
 
 SceGxmVertexProgram *vkv_pipeline_vertex_program(VkvPipeline *p, bool index32);
@@ -537,7 +610,18 @@ typedef enum VkvCmdType {
 	VKV_CMD_CLEAR_ATTACH,
 	VKV_CMD_CLEAR_COLOR_IMAGE,
 	VKV_CMD_BARRIER,
-	VKV_CMD_FF_DRAW
+	VKV_CMD_FF_DRAW,
+	VKV_CMD_COPY_IMAGE,
+	VKV_CMD_BLIT_IMAGE,
+	VKV_CMD_CLEAR_DS_IMAGE,
+	VKV_CMD_DRAW_INDIRECT,
+	VKV_CMD_EXECUTE,
+	VKV_CMD_LINE_WIDTH,
+	VKV_CMD_QUERY_BEGIN,
+	VKV_CMD_QUERY_END,
+	VKV_CMD_QUERY_RESET,
+	VKV_CMD_TIMESTAMP,
+	VKV_CMD_SET_EVENT
 } VkvCmdType;
 
 typedef struct VkvCmd {
@@ -575,7 +659,19 @@ typedef struct VkvCmdFillBuffer { VkvCmd h; VkvBuffer *dst; uint32_t off, size, 
 typedef struct VkvCmdClearAttach {
 	VkvCmd h; uint32_t na, nr; VkClearAttachment a[8]; VkClearRect r[];
 } VkvCmdClearAttach;
-typedef struct VkvCmdClearColorImage { VkvCmd h; VkvImage *img; VkClearColorValue c; } VkvCmdClearColorImage;
+typedef struct VkvCmdClearColorImage {
+	VkvCmd h; VkvImage *img; VkClearColorValue c; uint32_t n; VkImageSubresourceRange ranges[];
+} VkvCmdClearColorImage;
+typedef struct VkvCmdCopyImage { VkvCmd h; VkvImage *src, *dst; uint32_t n; VkImageCopy r[]; } VkvCmdCopyImage;
+typedef struct VkvCmdBlitImage { VkvCmd h; VkvImage *src, *dst; VkFilter filter; uint32_t n; VkImageBlit r[]; } VkvCmdBlitImage;
+typedef struct VkvCmdClearDSImage { VkvCmd h; VkvImage *img; VkClearDepthStencilValue v; } VkvCmdClearDSImage;
+typedef struct VkvCmdDrawIndirect {
+	VkvCmd h; VkvBuffer *buf; uint32_t off, count, stride; bool indexed;
+} VkvCmdDrawIndirect;
+typedef struct VkvCmdExecute { VkvCmd h; uint32_t n; struct VkCommandBuffer_T *cbs[]; } VkvCmdExecute;
+typedef struct VkvCmdLineWidth { VkvCmd h; float width; } VkvCmdLineWidth;
+typedef struct VkvCmdQuery { VkvCmd h; VkvQueryPool *pool; uint32_t first, count; } VkvCmdQuery;
+typedef struct VkvCmdSetEvent { VkvCmd h; VkvEvent *event; bool value; } VkvCmdSetEvent;
 
 /* Fixed-function draw (records everything needed, no external state) */
 typedef struct VkvCmdFFDraw {
@@ -608,6 +704,7 @@ struct VkCommandBuffer_T {
 	VkvRenderPass            *rp;
 	uint32_t                  sceneCount;
 	bool                      oom;
+	bool                      secondary;
 };
 
 typedef struct VkCommandPool_T {

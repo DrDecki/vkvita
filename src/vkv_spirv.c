@@ -106,8 +106,9 @@ typedef struct Block {
 } Block;
 
 typedef struct Sampler {
-	char     name[128];
-	uint32_t binding;
+	char            name[128];
+	VkvSpirvTexture t;
+	bool            fixedUnit;  /* combined image sampler: unit = binding if free */
 } Sampler;
 
 #define MAX_BLOCKS   16
@@ -138,8 +139,7 @@ typedef struct Tr {
 } Tr;
 
 static const char *k_unsupportedRes[] = {
-	"separate images", "separate samplers", "storage buffers", "storage images", "subpass inputs",
-	"acceleration structures",
+	"storage buffers", "storage images", "subpass inputs", "acceleration structures",
 };
 
 static void block_name(spvc_compiler comp, spvc_type_id base, char *out, size_t cap) {
@@ -152,13 +152,36 @@ static bool reflect(Tr *t, spvc_compiler comp, spvc_resources res) {
 	const spvc_reflected_resource *list;
 	size_t n;
 	static const spvc_resource_type bad[] = {
-		SPVC_RESOURCE_TYPE_SEPARATE_IMAGE, SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS, SPVC_RESOURCE_TYPE_STORAGE_BUFFER,
-		SPVC_RESOURCE_TYPE_STORAGE_IMAGE, SPVC_RESOURCE_TYPE_SUBPASS_INPUT, SPVC_RESOURCE_TYPE_ACCELERATION_STRUCTURE,
+		SPVC_RESOURCE_TYPE_STORAGE_BUFFER, SPVC_RESOURCE_TYPE_STORAGE_IMAGE, SPVC_RESOURCE_TYPE_SUBPASS_INPUT,
+		SPVC_RESOURCE_TYPE_ACCELERATION_STRUCTURE,
 	};
 	for (size_t k = 0; k < sizeof(bad) / sizeof(bad[0]); k++) {
 		if (spvc_resources_get_resource_list_for_type(res, bad[k], &list, &n) != SPVC_SUCCESS || !n) continue;
 		logf_(t->c, VKV_SPIRV_LOG_ERROR, "%s are not supported on GXM (first one: '%s')", k_unsupportedRes[k],
 		      list[0].name);
+	}
+
+	/* separate images and samplers become combined samplers named vkv_tex<n> */
+	spvc_variable_id dummy = 0;
+	spvc_compiler_build_dummy_sampler_for_combined_images(comp, &dummy);
+	const spvc_combined_image_sampler *combos = NULL;
+	size_t comboCount = 0;
+	if (spvc_compiler_build_combined_image_samplers(comp) == SPVC_SUCCESS)
+		spvc_compiler_get_combined_image_samplers(comp, &combos, &comboCount);
+	for (size_t i = 0; i < comboCount; i++) {
+		if (t->samplerCount >= MAX_SAMPLERS) { logf_(t->c, VKV_SPIRV_LOG_ERROR, "too many samplers"); break; }
+		Sampler *s = &t->samplers[t->samplerCount++];
+		memset(s, 0, sizeof(*s));
+		snprintf(s->name, sizeof(s->name), "vkv_tex%u", (unsigned)i);
+		spvc_compiler_set_name(comp, combos[i].combined_id, s->name);
+		s->t.imageSet = (int32_t)spvc_compiler_get_decoration(comp, combos[i].image_id, SpvDecorationDescriptorSet);
+		s->t.imageBinding = spvc_compiler_get_decoration(comp, combos[i].image_id, SpvDecorationBinding);
+		if (dummy && combos[i].sampler_id == dummy) {
+			s->t.samplerSet = -2;
+		} else {
+			s->t.samplerSet = (int32_t)spvc_compiler_get_decoration(comp, combos[i].sampler_id, SpvDecorationDescriptorSet);
+			s->t.samplerBinding = spvc_compiler_get_decoration(comp, combos[i].sampler_id, SpvDecorationBinding);
+		}
 	}
 
 	if (spvc_resources_get_resource_list_for_type(res, SPVC_RESOURCE_TYPE_SAMPLED_IMAGE, &list, &n) == SPVC_SUCCESS) {
@@ -170,12 +193,34 @@ static bool reflect(Tr *t, spvc_compiler comp, spvc_resources res) {
 			}
 			if (t->samplerCount >= MAX_SAMPLERS) { logf_(t->c, VKV_SPIRV_LOG_ERROR, "too many samplers"); break; }
 			Sampler *s = &t->samplers[t->samplerCount++];
+			memset(s, 0, sizeof(*s));
 			snprintf(s->name, sizeof(s->name), "%s", list[i].name);
-			s->binding = spvc_compiler_get_decoration(comp, list[i].id, SpvDecorationBinding);
-			if (s->binding >= 16)
-				logf_(t->c, VKV_SPIRV_LOG_ERROR, "sampler '%s' uses binding %u; GXM has 16 texture units", s->name,
-				      (unsigned)s->binding);
+			s->t.imageSet = (int32_t)spvc_compiler_get_decoration(comp, list[i].id, SpvDecorationDescriptorSet);
+			s->t.imageBinding = spvc_compiler_get_decoration(comp, list[i].id, SpvDecorationBinding);
+			s->t.samplerSet = -1;
+			s->fixedUnit = true;
 		}
+	}
+
+	/* texture units: combined samplers keep their binding where possible */
+	uint32_t used = 0;
+	for (uint32_t i = 0; i < t->samplerCount; i++) {
+		Sampler *s = &t->samplers[i];
+		if (s->fixedUnit && s->t.imageBinding < 16 && !(used & (1u << s->t.imageBinding))) {
+			s->t.unit = s->t.imageBinding;
+			used |= 1u << s->t.unit;
+		} else {
+			s->t.unit = 0xFFFFFFFFu;
+		}
+	}
+	for (uint32_t i = 0; i < t->samplerCount; i++) {
+		Sampler *s = &t->samplers[i];
+		if (s->t.unit != 0xFFFFFFFFu) continue;
+		uint32_t u = 0;
+		while (u < 16 && (used & (1u << u))) u++;
+		if (u == 16) { logf_(t->c, VKV_SPIRV_LOG_ERROR, "more than 16 textures in one stage"); break; }
+		s->t.unit = u;
+		used |= 1u << u;
 	}
 
 	static const spvc_resource_type blocks[] = { SPVC_RESOURCE_TYPE_UNIFORM_BUFFER, SPVC_RESOURCE_TYPE_PUSH_CONSTANT };
@@ -547,7 +592,7 @@ static char *rewrite(Tr *t, const char *hlsl) {
 			}
 			const Sampler *smp = find_sampler(t, name);
 			if (!smp) { logf_(t->c, VKV_SPIRV_LOG_ERROR, "unknown sampler '%s'", name); break; }
-			sb_printf(&o, "uniform %s %s : TEXUNIT%u;\n", type, name, (unsigned)smp->binding);
+			sb_printf(&o, "uniform %s %s : TEXUNIT%u;\n", type, name, (unsigned)smp->t.unit);
 			continue;
 		}
 		if (!strcmp(line, "struct SPIRV_Cross_Input") || !strcmp(line, "struct SPIRV_Cross_Output")) {
@@ -636,6 +681,13 @@ done:
 		out->uniCount = t->uniCount;
 		t->unis = NULL;
 		t->uniCount = 0;
+		if (t->samplerCount) {
+			out->texs = malloc(t->samplerCount * sizeof(*out->texs));
+			if (out->texs) {
+				for (uint32_t i = 0; i < t->samplerCount; i++) out->texs[i] = t->samplers[i].t;
+				out->texCount = t->samplerCount;
+			}
+		}
 	} else {
 		free(cg);
 		cg = NULL;
@@ -652,6 +704,7 @@ void vkv_spirv_free(VkvSpirvResult *r) {
 	if (!r) return;
 	for (uint32_t i = 0; i < r->uniCount; i++) free(r->unis[i].name);
 	free(r->unis);
+	free(r->texs);
 	free(r->cg);
 	memset(r, 0, sizeof(*r));
 }

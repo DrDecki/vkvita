@@ -557,15 +557,67 @@ static unsigned tex_bpp(SceGxmTextureFormat f) {
 }
 typedef struct { void *data; uint32_t wh; uint32_t fmt; } MockTex;
 _Static_assert(sizeof(MockTex) <= sizeof(SceGxmTexture), "mock texture stash");
-int sceGxmTextureInitLinear(SceGxmTexture *t, const void *data, SceGxmTextureFormat fmt, unsigned int w,
-                            unsigned int h, unsigned int mips) {
-	(void)mips;
+
+/* bytes each texture reads, by data pointer, so check_texture can touch the whole chain */
+#define MOCK_TEX_SIZES 512
+static struct { const void *data; size_t bytes; } g_texSizes[MOCK_TEX_SIZES];
+static unsigned g_texSizeNext;
+static void tex_record(const void *data, size_t bytes) {
+	for (unsigned i = 0; i < MOCK_TEX_SIZES; i++)
+		if (g_texSizes[i].data == data) { g_texSizes[i].bytes = bytes; return; }
+	g_texSizes[g_texSizeNext].data = data;
+	g_texSizes[g_texSizeNext].bytes = bytes;
+	g_texSizeNext = (g_texSizeNext + 1) % MOCK_TEX_SIZES;
+}
+static size_t tex_lookup(const void *data) {
+	for (unsigned i = 0; i < MOCK_TEX_SIZES; i++) if (g_texSizes[i].data == data) return g_texSizes[i].bytes;
+	return 0;
+}
+static unsigned tex_block(SceGxmTextureFormat f) {
+	switch ((uint32_t)f & 0x9F000000u) {
+	case SCE_GXM_TEXTURE_BASE_FORMAT_UBC1: case SCE_GXM_TEXTURE_BASE_FORMAT_UBC4: return 8;
+	case SCE_GXM_TEXTURE_BASE_FORMAT_UBC2: case SCE_GXM_TEXTURE_BASE_FORMAT_UBC3:
+	case SCE_GXM_TEXTURE_BASE_FORMAT_UBC5: return 16;
+	default: return 0;
+	}
+}
+static int tex_init(SceGxmTexture *t, const void *data, SceGxmTextureFormat fmt, unsigned w, unsigned h,
+                    unsigned mips, int swizzled, unsigned faces) {
 	if (!data || ((uintptr_t)data & 15)) mock_fail("texture data %p not 16-byte aligned", data);
+	if (!w || !h || w > 4096 || h > 4096) mock_fail("texture size %ux%u", w, h);
+	if (swizzled && ((w & (w - 1)) || (h & (h - 1)))) mock_fail("swizzled texture %ux%u is not power of two", w, h);
+	if (!mips) mips = 1;
+	unsigned bpp = tex_bpp(fmt), blk = tex_block(fmt);
+	if (!swizzled && blk) mock_fail("compressed texture with a linear layout");
+	size_t bytes = 0;
+	for (unsigned l = 0; l < mips; l++) {
+		unsigned lw = w >> l ? w >> l : 1, lh = h >> l ? h >> l : 1;
+		size_t sz = blk ? (size_t)((lw + 3) / 4) * ((lh + 3) / 4) * blk : (size_t)((lw + 7) & ~7u) * lh * bpp;
+		bytes += (sz + 15) & ~(size_t)15;
+	}
 	MockTex m = { (void *)data, w | (h << 16), (uint32_t)fmt };
 	memset(t, 0, sizeof(*t));
 	memcpy(t, &m, sizeof(m));
+	tex_record(data, bytes * faces);
 	return 0;
 }
+int sceGxmTextureInitLinear(SceGxmTexture *t, const void *data, SceGxmTextureFormat fmt, unsigned int w,
+                            unsigned int h, unsigned int mips) {
+	return tex_init(t, data, fmt, w, h, mips, 0, 1);
+}
+int sceGxmTextureInitSwizzled(SceGxmTexture *t, const void *data, SceGxmTextureFormat fmt, unsigned int w,
+                              unsigned int h, unsigned int mips) {
+	return tex_init(t, data, fmt, w, h, mips, 1, 1);
+}
+int sceGxmTextureInitCube(SceGxmTexture *t, const void *data, SceGxmTextureFormat fmt, unsigned int w,
+                          unsigned int h, unsigned int mips) {
+	if (w != h) mock_fail("cube texture %ux%u is not square", w, h);
+	return tex_init(t, data, fmt, w, h, mips, 1, 6);
+}
+int sceGxmTextureSetMipFilter(SceGxmTexture *t, SceGxmTextureMipFilter f) { (void)t; (void)f; return 0; }
+int sceGxmTextureSetMipmapCount(SceGxmTexture *t, unsigned int n) { (void)t; if (!n || n > 13) mock_fail("mip count %u", n); return 0; }
+int sceGxmTextureSetGammaMode(SceGxmTexture *t, SceGxmTextureGammaMode g) { (void)t; (void)g; return 0; }
+int sceGxmColorSurfaceSetGammaMode(SceGxmColorSurface *s, SceGxmColorSurfaceGammaMode g) { (void)s; (void)g; return 0; }
 int sceGxmTextureSetMinFilter(SceGxmTexture *t, SceGxmTextureFilter f) { (void)t; (void)f; return 0; }
 int sceGxmTextureSetMagFilter(SceGxmTexture *t, SceGxmTextureFilter f) { (void)t; (void)f; return 0; }
 int sceGxmTextureSetUAddrMode(SceGxmTexture *t, SceGxmTextureAddrMode m) { (void)t; (void)m; return 0; }
@@ -575,8 +627,8 @@ static void check_texture(const SceGxmTexture *t, const char *what) {
 	MockTex m;
 	memcpy(&m, t, sizeof(m));
 	if (!m.data) { mock_fail("%s: texture has no data", what); return; }
-	unsigned w = m.wh & 0xFFFF, h = m.wh >> 16, bpp = tex_bpp((SceGxmTextureFormat)m.fmt);
-	if (bpp) touch(m.data, (size_t)((w + 7) & ~7u) * bpp * h);
+	size_t bytes = tex_lookup(m.data);
+	if (bytes) touch(m.data, bytes);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -766,6 +818,27 @@ void sceGxmSetBackDepthFunc(SceGxmContext *c, SceGxmDepthFunc f) { (void)c; (voi
 void sceGxmSetFrontDepthWriteEnable(SceGxmContext *c, SceGxmDepthWriteMode m) { (void)c; (void)m; }
 void sceGxmSetBackDepthWriteEnable(SceGxmContext *c, SceGxmDepthWriteMode m) { (void)c; (void)m; }
 void sceGxmSetFrontPolygonMode(SceGxmContext *c, SceGxmPolygonMode m) { (void)c; (void)m; }
+void sceGxmSetFrontPointLineWidth(SceGxmContext *c, unsigned int w) { (void)c; if (!w || w > 16) mock_fail("line width %u", w); }
+void sceGxmSetBackPointLineWidth(SceGxmContext *c, unsigned int w) { (void)c; if (!w || w > 16) mock_fail("line width %u", w); }
+static void *g_visBuf;
+static unsigned g_visIndex, g_visOn;
+int sceGxmSetVisibilityBuffer(SceGxmContext *c, void *base, unsigned int stride) {
+	(void)c;
+	if (!base || stride < 4) mock_fail("visibility buffer %p stride %u", base, stride);
+	g_visBuf = base;
+	touch(base, (size_t)stride * 4);
+	return 0;
+}
+void sceGxmSetFrontVisibilityTestIndex(SceGxmContext *c, unsigned int i) { (void)c; g_visIndex = i; }
+void sceGxmSetBackVisibilityTestIndex(SceGxmContext *c, unsigned int i) { (void)c; g_visIndex = i; }
+void sceGxmSetFrontVisibilityTestOp(SceGxmContext *c, SceGxmVisibilityTestOp op) { (void)c; (void)op; }
+void sceGxmSetBackVisibilityTestOp(SceGxmContext *c, SceGxmVisibilityTestOp op) { (void)c; (void)op; }
+void sceGxmSetFrontVisibilityTestEnable(SceGxmContext *c, SceGxmVisibilityTestMode m) {
+	(void)c;
+	g_visOn = m == SCE_GXM_VISIBILITY_TEST_ENABLED;
+	if (g_visOn && !g_visBuf) mock_fail("visibility test enabled without a visibility buffer");
+}
+void sceGxmSetBackVisibilityTestEnable(SceGxmContext *c, SceGxmVisibilityTestMode m) { (void)c; (void)m; }
 void sceGxmSetBackPolygonMode(SceGxmContext *c, SceGxmPolygonMode m) { (void)c; (void)m; }
 void sceGxmSetFrontStencilFunc(SceGxmContext *c, SceGxmStencilFunc f, SceGxmStencilOp a, SceGxmStencilOp b,
                                SceGxmStencilOp d, unsigned char cm, unsigned char wm) { (void)c; (void)f; (void)a; (void)b; (void)d; (void)cm; (void)wm; }

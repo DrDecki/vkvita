@@ -5,6 +5,8 @@
  */
 #include "vkv_internal.h"
 
+#include <math.h>
+
 typedef struct VkvReplay {
 	struct VkDevice_T        *dev;
 	SceGxmContext            *ctx;
@@ -14,6 +16,7 @@ typedef struct VkvReplay {
 	VkvRenderPass            *rp;
 	VkvFramebuffer           *fb;
 	VkvImage                 *colorImg, *depthImg;
+	VkvImageView             *colorView;
 	SceGxmColorSurface        color;
 	SceGxmDepthStencilSurface depth;
 	bool                      splits;         /* pass contains mid-pass clears */
@@ -43,6 +46,7 @@ typedef struct VkvReplay {
 	uint32_t                  sCmp[2], sWr[2], sRef[2];
 	uint32_t                  dynSet;         /* VKV_DYN_* bits set by vkCmdSet* */
 	float                     biasConst, biasSlope;
+	float                     lineWidth;
 } VkvReplay;
 
 /* ------------------------------------------------------------------------ */
@@ -95,22 +99,26 @@ static uint32_t vkv_pack_color(const VkvImage *img, const VkClearColorValue *c, 
 	}
 }
 
-/* Fills a rectangle of a color image, outside of any scene. */
-static void vkv_clear_color_rect(VkvReplay *R, VkvImage *img, const VkClearColorValue *c, uint32_t x, uint32_t y,
-                                 uint32_t w, uint32_t h) {
-	if (!img->ptr || !w || !h) return;
-	x = VKV_MIN(x, img->width); y = VKV_MIN(y, img->height);
-	w = VKV_MIN(w, img->width - x); h = VKV_MIN(h, img->height - y);
+/* Fills a rectangle of one level of a color image, outside of any scene. */
+static void vkv_clear_color_rect(VkvReplay *R, VkvImage *img, uint32_t level, uint32_t layer, const VkClearColorValue *c,
+                                 uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+	if (!img->ptr || !w || !h || img->fi->block || level >= img->levels || layer >= img->layers) return;
+	uint32_t lw = vkv_image_level_width(img, level), lh = vkv_image_level_height(img, level);
+	x = VKV_MIN(x, lw); y = VKV_MIN(y, lh);
+	w = VKV_MIN(w, lw - x); h = VKV_MIN(h, lh - y);
+	if (!w || !h) return;
 	uint8_t texel[16];
 	uint32_t bpp = vkv_pack_color(img, c, texel);
+	uint8_t *base = vkv_image_level_ptr(img, level, layer);
+	uint32_t pitch = img->levelPitch[level];
 	g_vkv.cur.clears++;
 
 	static bool s_fillBroken;
-	if (!vkv_compat(VKV_COMPAT_CPU_CLEAR) && !s_fillBroken && img->sync && bpp == 4) {
+	if (!vkv_compat(VKV_COMPAT_CPU_CLEAR) && !s_fillBroken && img->sync && bpp == 4 && !img->swizzled) {
 		uint32_t value = 0;
 		memcpy(&value, texel, bpp);
-		int r = sceGxmTransferFill(value, SCE_GXM_TRANSFER_FORMAT_U8U8U8U8_ABGR, img->ptr, x, y, w, h,
-		                           (int32_t)img->rowPitch, img->sync, SCE_GXM_TRANSFER_FRAGMENT_SYNC, NULL);
+		int r = sceGxmTransferFill(value, SCE_GXM_TRANSFER_FORMAT_U8U8U8U8_ABGR, base, x, y, w, h, (int32_t)pitch,
+		                           img->sync, SCE_GXM_TRANSFER_FRAGMENT_SYNC, NULL);
 		if (r >= 0) {
 			R->dev->usedTransfer = true;
 			R->dev->transferPending = true;
@@ -121,8 +129,13 @@ static void vkv_clear_color_rect(VkvReplay *R, VkvImage *img, const VkClearColor
 	}
 	/* CPU path: the GPU must not be using the image */
 	if (R->dev->gpuBusy) vkv_device_wait_gpu(R->dev);
+	if (img->swizzled) {
+		for (uint32_t row = 0; row < h; row++)
+			for (uint32_t i = 0; i < w; i++) memcpy(vkv_image_elem(img, level, layer, x + i, y + row), texel, bpp);
+		return;
+	}
 	for (uint32_t row = 0; row < h; row++) {
-		uint8_t *p = img->ptr + (y + row) * img->rowPitch + x * bpp;
+		uint8_t *p = base + (y + row) * pitch + x * bpp;
 		if (bpp == 4) {
 			uint32_t v; memcpy(&v, texel, 4);
 			uint32_t *q = (uint32_t *)p;
@@ -139,6 +152,15 @@ static void vkv_clear_color_rect(VkvReplay *R, VkvImage *img, const VkClearColor
 static void vkv_begin_scene(VkvReplay *R, bool loadDepth, bool clearDepth, float depth, uint32_t stencil) {
 	VkvRenderPass *rp = R->rp;
 	VkvFramebuffer *fb = R->fb;
+	if (R->depthImg && R->depthImg->pendingDepthClear) {
+		if (loadDepth || !clearDepth) {
+			loadDepth = false;
+			clearDepth = true;
+			depth = R->depthImg->clearDepth;
+			stencil = R->depthImg->clearStencil;
+		}
+		R->depthImg->pendingDepthClear = false;
+	}
 	if (R->depthImg) {
 		const VkvAttachmentDesc *a = &rp->att[rp->depthIndex];
 		sceGxmDepthStencilSurfaceInit(&R->depth, SCE_GXM_DEPTH_STENCIL_FORMAT_S8D24, SCE_GXM_DEPTH_STENCIL_SURFACE_TILED,
@@ -159,9 +181,14 @@ static void vkv_begin_scene(VkvReplay *R, bool loadDepth, bool clearDepth, float
 		SceGxmColorFormat cf = img->swapchain ? SCE_GXM_COLOR_FORMAT_U8U8U8U8_ABGR : img->fi->color;
 		SceGxmOutputRegisterSize rs = img->fi->bpp == 8 ? SCE_GXM_OUTPUT_REGISTER_SIZE_64BIT
 		                                                : SCE_GXM_OUTPUT_REGISTER_SIZE_32BIT;
+		uint32_t level = R->colorView ? R->colorView->baseLevel : 0;
+		uint32_t layer = R->colorView ? R->colorView->baseLayer : 0;
 		int r = sceGxmColorSurfaceInit(&R->color, cf, SCE_GXM_COLOR_SURFACE_LINEAR, SCE_GXM_COLOR_SURFACE_SCALE_NONE,
-		                               rs, fb->width, fb->height, img->alignedW, img->ptr);
+		                               rs, fb->width, fb->height, img->levelPitch[level] / img->fi->bpp,
+		                               vkv_image_level_ptr(img, level, layer));
 		if (r < 0) VKV_ERROR("sceGxmColorSurfaceInit failed 0x%08X", (unsigned)r);
+		const VkvFormatInfo *vf = R->colorView ? vkv_format(R->colorView->format) : img->fi;
+		if (vf && vf->srgb) sceGxmColorSurfaceSetGammaMode(&R->color, SCE_GXM_COLOR_SURFACE_GAMMA_BGR);
 	} else {
 		sceGxmColorSurfaceInitDisabled(&R->color);
 	}
@@ -214,14 +241,16 @@ static void vkv_exec_begin_rp(VkvReplay *R, const VkvCmdBeginRP *c, const uint8_
 	VkvFramebuffer *fb = c->fb;
 	R->rp = rp;
 	R->fb = fb;
-	R->colorImg = rp->colorIndex >= 0 ? fb->views[rp->colorIndex]->image : NULL;
+	R->colorView = rp->colorIndex >= 0 ? fb->views[rp->colorIndex] : NULL;
+	R->colorImg = R->colorView ? R->colorView->image : NULL;
 	R->depthImg = rp->depthIndex >= 0 ? fb->views[rp->depthIndex]->image : NULL;
 	R->splits = vkv_pass_has_splits(next, end);
 
 	if (R->colorImg) {
 		const VkvAttachmentDesc *a = &rp->att[rp->colorIndex];
 		if (a->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR && (uint32_t)rp->colorIndex < c->clearCount)
-			vkv_clear_color_rect(R, R->colorImg, &c->clears[rp->colorIndex].color, (uint32_t)c->area.offset.x,
+			vkv_clear_color_rect(R, R->colorImg, R->colorView->baseLevel, R->colorView->baseLayer,
+			                     &c->clears[rp->colorIndex].color, (uint32_t)c->area.offset.x,
 			                     (uint32_t)c->area.offset.y, c->area.extent.width, c->area.extent.height);
 	}
 	bool loadDepth = false, clearDepth = false;
@@ -252,7 +281,8 @@ static void vkv_exec_clear_attachments(VkvReplay *R, const VkvCmdClearAttach *c)
 		const VkClearAttachment *a = &c->a[i];
 		if ((a->aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) && R->colorImg) {
 			for (uint32_t k = 0; k < c->nr; k++)
-				vkv_clear_color_rect(R, R->colorImg, &a->clearValue.color, (uint32_t)c->r[k].rect.offset.x,
+				vkv_clear_color_rect(R, R->colorImg, R->colorView->baseLevel, R->colorView->baseLayer,
+				                     &a->clearValue.color, (uint32_t)c->r[k].rect.offset.x,
 				                     (uint32_t)c->r[k].rect.offset.y, c->r[k].rect.extent.width,
 				                     c->r[k].rect.extent.height);
 		}
@@ -322,17 +352,26 @@ static void vkv_apply_pipeline(VkvReplay *R, VkvPipeline *p, int variant) {
 	}
 	sceGxmSetFrontDepthBias(ctx, factor, units);
 	sceGxmSetBackDepthBias(ctx, factor, units);
+
+	float lw = (p->dynamicMask & VKV_DYN_LINE_WIDTH) && (R->dynSet & VKV_DYN_LINE_WIDTH) ? R->lineWidth : p->lineWidth;
+	unsigned lwi = lw < 1.0f ? 1u : lw > 16.0f ? 16u : (unsigned)(lw + 0.5f);
+	sceGxmSetFrontPointLineWidth(ctx, lwi);
+	sceGxmSetBackPointLineWidth(ctx, lwi);
 	R->viewportDirty = true;
 	R->scissorDirty = true;
+}
+
+static VkViewport vkv_current_viewport(const VkvReplay *R, const VkvPipeline *p) {
+	if (p->hasViewport) return p->viewport;
+	if (R->hasViewport) return R->viewport;
+	return (VkViewport){ 0, 0, (float)R->fb->width, (float)R->fb->height, 0.0f, 1.0f };
 }
 
 static void vkv_apply_viewport(VkvReplay *R, const VkvPipeline *p) {
 	if (R->viewportDirty) {
 		R->viewportDirty = false;
-		VkViewport v;
-		if (p->hasViewport) v = p->viewport;
-		else if (R->hasViewport) v = R->viewport;
-		else v = (VkViewport){ 0, 0, (float)R->fb->width, (float)R->fb->height, 0.0f, 1.0f };
+		R->scissorDirty = true; /* the region clip also covers the viewport */
+		VkViewport v = vkv_current_viewport(R, p);
 		float xs = v.width * 0.5f, xo = v.x + xs;
 		float ys = v.height * 0.5f, yo = v.y + ys;
 		float zs = v.maxDepth - v.minDepth, zo = v.minDepth;
@@ -345,19 +384,27 @@ static void vkv_apply_viewport(VkvReplay *R, const VkvPipeline *p) {
 	}
 	if (R->scissorDirty) {
 		R->scissorDirty = false;
-		uint32_t w = R->fb->width, h = R->fb->height;
-		uint32_t x0 = 0, y0 = 0, x1 = w - 1, y1 = h - 1;
+		int32_t w = (int32_t)R->fb->width, h = (int32_t)R->fb->height;
+		/* GXM does not clip to the viewport, so the region clip is viewport and scissor combined */
+		VkViewport v = vkv_current_viewport(R, p);
+		float vx0 = v.width < 0 ? v.x + v.width : v.x, vy0 = v.height < 0 ? v.y + v.height : v.y;
+		int32_t sx = VKV_MAX((int32_t)floorf(vx0), 0), sy = VKV_MAX((int32_t)floorf(vy0), 0);
+		int32_t ex = VKV_MIN((int32_t)ceilf(vx0 + fabsf(v.width)), w), ey = VKV_MIN((int32_t)ceilf(vy0 + fabsf(v.height)), h);
 		const VkRect2D *s = p->hasScissor ? &p->scissor : R->hasScissor ? &R->scissor : NULL;
-		if (s && !vkv_compat(VKV_COMPAT_IGNORE_SCISSOR)) {
-			int32_t sx = VKV_MAX(s->offset.x, 0), sy = VKV_MAX(s->offset.y, 0);
-			int32_t ex = VKV_MIN((int32_t)(s->offset.x + s->extent.width), (int32_t)w);
-			int32_t ey = VKV_MIN((int32_t)(s->offset.y + s->extent.height), (int32_t)h);
-			if (ex <= sx || ey <= sy) { sx = sy = 0; ex = ey = 1; } /* empty scissor: clip almost all */
-			x0 = sx; y0 = sy; x1 = ex - 1; y1 = ey - 1;
-			if ((sx | sy) & 31 || (((uint32_t)ex & 31) && (uint32_t)ex != w) || (((uint32_t)ey & 31) && (uint32_t)ey != h))
+		bool scissored = s && !vkv_compat(VKV_COMPAT_IGNORE_SCISSOR);
+		if (scissored) {
+			int32_t qx = s->offset.x, qy = s->offset.y;
+			int32_t qe = qx + (int32_t)s->extent.width, qf = qy + (int32_t)s->extent.height;
+			if (((qx | qy) & 31) || ((qe & 31) && qe < w) || ((qf & 31) && qf < h))
 				VKV_UNSUPPORTED("pixel-exact scissor (GXM region clip works on 32x32 tiles)");
+			sx = VKV_MAX(sx, s->offset.x);
+			sy = VKV_MAX(sy, s->offset.y);
+			ex = VKV_MIN(ex, (int32_t)(s->offset.x + s->extent.width));
+			ey = VKV_MIN(ey, (int32_t)(s->offset.y + s->extent.height));
 		}
-		sceGxmSetRegionClip(R->ctx, SCE_GXM_REGION_CLIP_OUTSIDE, x0, y0, x1, y1);
+		if (ex <= sx || ey <= sy) { sx = sy = 0; ex = ey = 1; } /* empty: clip almost all */
+		sceGxmSetRegionClip(R->ctx, SCE_GXM_REGION_CLIP_OUTSIDE, (unsigned)sx, (unsigned)sy, (unsigned)(ex - 1),
+		                    (unsigned)(ey - 1));
 	}
 }
 
@@ -423,9 +470,37 @@ static void vkv_write_uniforms(VkvReplay *R, void *buf, const VkvUniformMap *map
 	}
 }
 
+static VkvDescriptor *vkv_find_descriptor(VkvReplay *R, int set, uint32_t binding) {
+	if (set < 0 || set >= VKV_MAX_SETS || !R->sets[set]) return NULL;
+	VkvSet *s = R->sets[set];
+	for (uint32_t b = 0; b < s->layout->bindingCount; b++)
+		if (s->layout->bindings[b].binding == binding && s->layout->bindings[b].count)
+			return &s->desc[s->layout->bindings[b].first];
+	return NULL;
+}
+
+/* Builds the texture for one explicit texture unit from its image and sampler descriptors. */
+static bool vkv_resolve_texture(VkvReplay *R, const VkvTexBinding *t, SceGxmTexture *out) {
+	VkvDescriptor *img = vkv_find_descriptor(R, t->imageSet, t->imageBinding);
+	if (!img || !img->valid) return false;
+	if (img->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
+		*out = img->tex;
+		return true;
+	}
+	if (img->type != VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE || !img->view) return false;
+	*out = img->view->tex;
+	if (t->samplerSet >= 0) {
+		VkvDescriptor *sd = vkv_find_descriptor(R, t->samplerSet, t->samplerBinding);
+		if (!sd || !sd->sampler) return false;
+		vkv_texture_apply_sampler(out, sd->sampler, img->view->levelCount);
+	}
+	return true;
+}
+
 static void vkv_bind_resources(VkvReplay *R, const VkvPipeline *p) {
 	SceGxmContext *ctx = R->ctx;
 	uint32_t boundSamplers = 0, boundBuffers = 0;
+	bool legacyTex = !p->texExplicit[VKV_STAGE_VERTEX] || !p->texExplicit[VKV_STAGE_FRAGMENT];
 	for (uint32_t si = 0; si < VKV_MAX_SETS; si++) {
 		VkvSet *s = R->sets[si];
 		if (!s) continue;
@@ -443,17 +518,37 @@ static void vkv_bind_resources(VkvReplay *R, const VkvPipeline *p) {
 					sceGxmSetVertexUniformBuffer(ctx, slot, ptr);
 					sceGxmSetFragmentUniformBuffer(ctx, slot, ptr);
 					boundBuffers |= 1u << slot;
-				} else if (d->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
+				} else if (legacyTex && d->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
 					if (slot >= SCE_GXM_MAX_TEXTURE_UNITS) continue;
-					sceGxmSetFragmentTexture(ctx, slot, &d->tex);
-					if (p->vSamplerMask & (1u << slot)) sceGxmSetVertexTexture(ctx, slot, &d->tex);
+					if (!p->texExplicit[VKV_STAGE_FRAGMENT]) sceGxmSetFragmentTexture(ctx, slot, &d->tex);
+					if (!p->texExplicit[VKV_STAGE_VERTEX] && (p->vSamplerMask & (1u << slot)))
+						sceGxmSetVertexTexture(ctx, slot, &d->tex);
 					boundSamplers |= 1u << slot;
 				}
 			}
 		}
 	}
+	for (int st = 0; st < VKV_STAGE_COUNT; st++) {
+		if (!p->texExplicit[st]) continue;
+		for (uint32_t i = 0; i < p->texCount[st]; i++) {
+			const VkvTexBinding *t = &p->texb[st][i];
+			SceGxmTexture tex;
+			if (!vkv_resolve_texture(R, t, &tex)) {
+				if (vkv_validate())
+					vkv_fail("draw", "pipeline '%s/%s': texture unit %u needs the image at set %d binding %u%s", p->vname,
+					         p->fname, (unsigned)t->unit, (int)t->imageSet, (unsigned)t->imageBinding,
+					         t->samplerSet >= 0 ? " and a sampler, but one of them is not bound" : ", which is not bound");
+				continue;
+			}
+			if (st == VKV_STAGE_FRAGMENT) sceGxmSetFragmentTexture(ctx, t->unit, &tex);
+			else sceGxmSetVertexTexture(ctx, t->unit, &tex);
+			boundSamplers |= 1u << t->unit;
+		}
+	}
 	if (vkv_validate()) {
-		uint32_t missingS = (p->fSamplerMask | p->vSamplerMask) & ~boundSamplers;
+		uint32_t need = (p->texExplicit[VKV_STAGE_FRAGMENT] ? 0 : p->fSamplerMask) |
+		                (p->texExplicit[VKV_STAGE_VERTEX] ? 0 : p->vSamplerMask);
+		uint32_t missingS = need & ~boundSamplers;
 		uint32_t missingB = p->bufferMask & ~boundBuffers;
 		if (missingS) vkv_fail("draw", "pipeline '%s/%s' samples texture units 0x%x with no image bound", p->vname,
 		                       p->fname, (unsigned)missingS);
@@ -576,36 +671,199 @@ static void vkv_exec_copy_buf_img(VkvReplay *R, const VkvCmdCopyBufImg *c, bool 
 	VkvBuffer *buf = c->buf;
 	if (!img->ptr || !buf->ptr) return;
 	vkv_transfer_sync(R);
-	uint32_t bpp = img->fi->bpp;
+	const uint32_t es = img->fi->bpp, bd = img->fi->block ? 4 : 1; /* element size, texels per element side */
 	for (uint32_t i = 0; i < c->n; i++) {
 		const VkBufferImageCopy *r = &c->r[i];
-		if (r->imageSubresource.mipLevel || r->imageSubresource.baseArrayLayer) {
-			VKV_UNSUPPORTED("copies to mip levels/layers above 0 (skipped)");
+		uint32_t level = r->imageSubresource.mipLevel;
+		if (level >= img->levels) {
+			VKV_UNSUPPORTED("copies to mip levels that are not stored (skipped)");
 			continue;
 		}
+		uint32_t ew, eh;
+		vkv_image_level_elems(img, level, &ew, &eh);
 		uint32_t rowLen = r->bufferRowLength ? r->bufferRowLength : r->imageExtent.width;
 		uint32_t rows = r->bufferImageHeight ? r->bufferImageHeight : r->imageExtent.height;
-		(void)rows;
-		uint32_t x = (uint32_t)r->imageOffset.x, y = (uint32_t)r->imageOffset.y;
-		uint32_t w = VKV_MIN(r->imageExtent.width, img->width - VKV_MIN(x, img->width));
-		uint32_t h = VKV_MIN(r->imageExtent.height, img->height - VKV_MIN(y, img->height));
-		uint32_t srcPitch = rowLen * bpp;
-		if (vkv_validate() && r->bufferOffset + (uint64_t)srcPitch * (h ? h - 1 : 0) + w * bpp > buf->size) {
-			vkv_fail("vkCmdCopyBufferToImage", "region %u reads past the buffer", (unsigned)i);
-			continue;
-		}
-		for (uint32_t row = 0; row < h; row++) {
-			uint8_t *ip = img->ptr + (y + row) * img->rowPitch + x * bpp;
-			uint8_t *bp = buf->ptr + r->bufferOffset + row * srcPitch;
-			if (toImage) memcpy(ip, bp, w * bpp); else memcpy(bp, ip, w * bpp);
+		uint32_t ex = (uint32_t)r->imageOffset.x / bd, ey = (uint32_t)r->imageOffset.y / bd;
+		uint32_t w = (r->imageExtent.width + bd - 1) / bd, h = (r->imageExtent.height + bd - 1) / bd;
+		w = VKV_MIN(w, ew - VKV_MIN(ex, ew));
+		h = VKV_MIN(h, eh - VKV_MIN(ey, eh));
+		uint32_t srcPitch = (rowLen + bd - 1) / bd * es;
+		uint32_t layerStride = srcPitch * ((rows + bd - 1) / bd);
+		uint32_t layers = r->imageSubresource.layerCount ? r->imageSubresource.layerCount : 1;
+		for (uint32_t L = 0; L < layers; L++) {
+			uint32_t layer = r->imageSubresource.baseArrayLayer + L;
+			if (layer >= img->layers) {
+				VKV_UNSUPPORTED("copies to array layers that are not stored (skipped)");
+				break;
+			}
+			uint64_t srcBase = r->bufferOffset + (uint64_t)L * layerStride;
+			if (vkv_validate() && h && srcBase + (uint64_t)srcPitch * (h - 1) + w * es > buf->size) {
+				vkv_fail(toImage ? "vkCmdCopyBufferToImage" : "vkCmdCopyImageToBuffer", "region %u reads past the buffer",
+				         (unsigned)i);
+				break;
+			}
+			for (uint32_t row = 0; row < h; row++) {
+				uint8_t *bp = buf->ptr + srcBase + row * srcPitch;
+				if (!img->swizzled) {
+					uint8_t *ip = vkv_image_elem(img, level, layer, ex, ey + row);
+					if (toImage) memcpy(ip, bp, w * es); else memcpy(bp, ip, w * es);
+					continue;
+				}
+				for (uint32_t x = 0; x < w; x++) {
+					uint8_t *ip = vkv_image_elem(img, level, layer, ex + x, ey + row);
+					if (toImage) memcpy(ip, bp + x * es, es); else memcpy(bp + x * es, ip, es);
+				}
+			}
 		}
 		g_vkv.cur.copies++;
 	}
 }
 
+static void vkv_exec_copy_image(VkvReplay *R, const VkvCmdCopyImage *c) {
+	VkvImage *src = c->src, *dst = c->dst;
+	if (!src->ptr || !dst->ptr || src->fi->bpp != dst->fi->bpp || src->fi->block != dst->fi->block) return;
+	if (R->dev->gpuBusy) vkv_device_wait_gpu(R->dev); /* the source may have been rendered to */
+	const uint32_t es = src->fi->bpp, bd = src->fi->block ? 4 : 1;
+	for (uint32_t i = 0; i < c->n; i++) {
+		const VkImageCopy *r = &c->r[i];
+		uint32_t sl = r->srcSubresource.mipLevel, dl = r->dstSubresource.mipLevel;
+		if (sl >= src->levels || dl >= dst->levels) continue;
+		uint32_t sw, sh, dw, dh;
+		vkv_image_level_elems(src, sl, &sw, &sh);
+		vkv_image_level_elems(dst, dl, &dw, &dh);
+		uint32_t sx = (uint32_t)r->srcOffset.x / bd, sy = (uint32_t)r->srcOffset.y / bd;
+		uint32_t dx = (uint32_t)r->dstOffset.x / bd, dy = (uint32_t)r->dstOffset.y / bd;
+		uint32_t w = (r->extent.width + bd - 1) / bd, h = (r->extent.height + bd - 1) / bd;
+		if (sx >= sw || sy >= sh || dx >= dw || dy >= dh) continue;
+		w = VKV_MIN(w, VKV_MIN(sw - sx, dw - dx));
+		h = VKV_MIN(h, VKV_MIN(sh - sy, dh - dy));
+		uint32_t layers = VKV_MAX(r->srcSubresource.layerCount, 1u);
+		for (uint32_t L = 0; L < layers; L++) {
+			uint32_t sa = r->srcSubresource.baseArrayLayer + L, da = r->dstSubresource.baseArrayLayer + L;
+			if (sa >= src->layers || da >= dst->layers) break;
+			for (uint32_t y = 0; y < h; y++) {
+				if (!src->swizzled && !dst->swizzled) {
+					memmove(vkv_image_elem(dst, dl, da, dx, dy + y), vkv_image_elem(src, sl, sa, sx, sy + y), w * es);
+					continue;
+				}
+				for (uint32_t x = 0; x < w; x++)
+					memcpy(vkv_image_elem(dst, dl, da, dx + x, dy + y), vkv_image_elem(src, sl, sa, sx + x, sy + y), es);
+			}
+		}
+		g_vkv.cur.copies++;
+	}
+}
+
+/* Formats whose texels are 1 to 4 unsigned bytes can be filtered byte by byte. */
+static bool vkv_byte_channels(VkFormat f) {
+	switch (f) {
+	case VK_FORMAT_R8G8B8A8_UNORM: case VK_FORMAT_R8G8B8A8_SRGB: case VK_FORMAT_B8G8R8A8_UNORM:
+	case VK_FORMAT_B8G8R8A8_SRGB: case VK_FORMAT_R8G8B8_UNORM: case VK_FORMAT_R8G8_UNORM: case VK_FORMAT_R8_UNORM:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static void vkv_blit_region(const VkvImage *src, const VkvImage *dst, const VkImageBlit *r, bool linear) {
+	uint32_t sl = r->srcSubresource.mipLevel, dl = r->dstSubresource.mipLevel;
+	if (sl >= src->levels || dl >= dst->levels) return;
+	int32_t sw = (int32_t)vkv_image_level_width(src, sl), shh = (int32_t)vkv_image_level_height(src, sl);
+	int32_t dw = (int32_t)vkv_image_level_width(dst, dl), dh = (int32_t)vkv_image_level_height(dst, dl);
+	float sx0 = (float)r->srcOffsets[0].x, sy0 = (float)r->srcOffsets[0].y;
+	float sx1 = (float)r->srcOffsets[1].x, sy1 = (float)r->srcOffsets[1].y;
+	int32_t dx0 = r->dstOffsets[0].x, dy0 = r->dstOffsets[0].y, dx1 = r->dstOffsets[1].x, dy1 = r->dstOffsets[1].y;
+	if (dx0 == dx1 || dy0 == dy1) return;
+	float kx = (sx1 - sx0) / (float)(dx1 - dx0), ky = (sy1 - sy0) / (float)(dy1 - dy0);
+	int32_t xa = VKV_MAX(VKV_MIN(dx0, dx1), 0), xb = VKV_MIN(VKV_MAX(dx0, dx1), dw);
+	int32_t ya = VKV_MAX(VKV_MIN(dy0, dy1), 0), yb = VKV_MIN(VKV_MAX(dy0, dy1), dh);
+	uint32_t bpp = dst->fi->bpp;
+	uint32_t layers = VKV_MAX(r->srcSubresource.layerCount, 1u);
+	for (uint32_t L = 0; L < layers; L++) {
+		uint32_t sa = r->srcSubresource.baseArrayLayer + L, da = r->dstSubresource.baseArrayLayer + L;
+		if (sa >= src->layers || da >= dst->layers) break;
+		for (int32_t y = ya; y < yb; y++) {
+			float v = sy0 + ((float)(y - dy0) + 0.5f) * ky - 0.5f;
+			for (int32_t x = xa; x < xb; x++) {
+				float u = sx0 + ((float)(x - dx0) + 0.5f) * kx - 0.5f;
+				uint8_t *out = vkv_image_elem(dst, dl, da, (uint32_t)x, (uint32_t)y);
+				if (!linear) {
+					int32_t ix = VKV_MIN(VKV_MAX((int32_t)floorf(u + 0.5f), 0), sw - 1);
+					int32_t iy = VKV_MIN(VKV_MAX((int32_t)floorf(v + 0.5f), 0), shh - 1);
+					memcpy(out, vkv_image_elem(src, sl, sa, (uint32_t)ix, (uint32_t)iy), bpp);
+					continue;
+				}
+				float fu = floorf(u), fv = floorf(v), ax = u - fu, ay = v - fv;
+				int32_t x0 = VKV_MIN(VKV_MAX((int32_t)fu, 0), sw - 1), x1 = VKV_MIN(x0 + 1, sw - 1);
+				int32_t y0 = VKV_MIN(VKV_MAX((int32_t)fv, 0), shh - 1), y1 = VKV_MIN(y0 + 1, shh - 1);
+				if (fu < 0) { x0 = x1 = 0; }
+				if (fv < 0) { y0 = y1 = 0; }
+				const uint8_t *p00 = vkv_image_elem(src, sl, sa, (uint32_t)x0, (uint32_t)y0);
+				const uint8_t *p10 = vkv_image_elem(src, sl, sa, (uint32_t)x1, (uint32_t)y0);
+				const uint8_t *p01 = vkv_image_elem(src, sl, sa, (uint32_t)x0, (uint32_t)y1);
+				const uint8_t *p11 = vkv_image_elem(src, sl, sa, (uint32_t)x1, (uint32_t)y1);
+				for (uint32_t k = 0; k < bpp; k++) {
+					float top = p00[k] + (p10[k] - p00[k]) * ax, bot = p01[k] + (p11[k] - p01[k]) * ax;
+					out[k] = (uint8_t)(top + (bot - top) * ay + 0.5f);
+				}
+			}
+		}
+	}
+}
+
+static void vkv_exec_blit_image(VkvReplay *R, const VkvCmdBlitImage *c) {
+	VkvImage *src = c->src, *dst = c->dst;
+	if (!src->ptr || !dst->ptr || src->fi->block || dst->fi->block) return;
+	if (src->fi->bpp != dst->fi->bpp) {
+		VKV_UNSUPPORTED("blits that convert between formats of different sizes (skipped)");
+		return;
+	}
+	if (R->dev->gpuBusy) vkv_device_wait_gpu(R->dev);
+	bool linear = c->filter == VK_FILTER_LINEAR && vkv_byte_channels(src->format) && src->format == dst->format;
+	if (c->filter == VK_FILTER_LINEAR && !linear) VKV_UNSUPPORTED("linear blits of non 8-bit formats (using nearest)");
+	for (uint32_t i = 0; i < c->n; i++) vkv_blit_region(src, dst, &c->r[i], linear);
+	g_vkv.cur.copies += c->n;
+}
+
+static void vkv_exec_draw_indirect(VkvReplay *R, const VkvCmdDrawIndirect *c) {
+	for (uint32_t i = 0; i < c->count; i++) {
+		uint32_t off = c->off + i * c->stride;
+		VkvCmdDraw d;
+		memset(&d, 0, sizeof(d));
+		if (c->indexed) {
+			if (off + sizeof(VkDrawIndexedIndirectCommand) > c->buf->size) break;
+			VkDrawIndexedIndirectCommand cmd;
+			memcpy(&cmd, c->buf->ptr + off, sizeof(cmd));
+			d.count = cmd.indexCount;
+			d.instances = cmd.instanceCount;
+			d.first = cmd.firstIndex;
+			d.vertexOffset = cmd.vertexOffset;
+			d.firstInstance = cmd.firstInstance;
+		} else {
+			if (off + sizeof(VkDrawIndirectCommand) > c->buf->size) break;
+			VkDrawIndirectCommand cmd;
+			memcpy(&cmd, c->buf->ptr + off, sizeof(cmd));
+			d.count = cmd.vertexCount;
+			d.instances = cmd.instanceCount;
+			d.first = cmd.firstVertex;
+			d.firstInstance = cmd.firstInstance;
+		}
+		if (d.count && d.instances) vkv_exec_draw(R, &d, c->indexed);
+	}
+}
+
 static void vkv_exec_clear_color_image(VkvReplay *R, const VkvCmdClearColorImage *c) {
-	if (!c->img->sync) vkv_image_ensure_sync(c->img);
-	vkv_clear_color_rect(R, c->img, &c->c, 0, 0, c->img->width, c->img->height);
+	VkvImage *img = c->img;
+	if (!img->sync) vkv_image_ensure_sync(img);
+	for (uint32_t i = 0; i < c->n; i++) {
+		const VkImageSubresourceRange *sr = &c->ranges[i];
+		uint32_t lc = sr->levelCount == VK_REMAINING_MIP_LEVELS ? img->levels : sr->levelCount;
+		uint32_t ac = sr->layerCount == VK_REMAINING_ARRAY_LAYERS ? img->layers : sr->layerCount;
+		for (uint32_t l = sr->baseMipLevel; l < VKV_MIN(sr->baseMipLevel + lc, img->levels); l++)
+			for (uint32_t a = sr->baseArrayLayer; a < VKV_MIN(sr->baseArrayLayer + ac, img->layers); a++)
+				vkv_clear_color_rect(R, img, l, a, &c->c, 0, 0, vkv_image_level_width(img, l),
+				                     vkv_image_level_height(img, l));
+	}
 }
 
 /* ------------------------------------------------------------------------ */
@@ -615,7 +873,9 @@ static const char *vkv_cmd_name(uint16_t t) {
 	static const char *names[] = { "?", "BeginRenderPass", "EndRenderPass", "BindPipeline", "BindVertexBuffers",
 		"BindIndexBuffer", "BindDescriptorSets", "PushConstants", "SetViewport", "SetScissor", "SetDepthBias",
 		"SetStencil", "Draw", "DrawIndexed", "CopyBuffer", "CopyBufferToImage", "CopyImageToBuffer",
-		"UpdateBuffer", "FillBuffer", "ClearAttachments", "ClearColorImage", "Barrier", "FixedFunctionDraw" };
+		"UpdateBuffer", "FillBuffer", "ClearAttachments", "ClearColorImage", "Barrier", "FixedFunctionDraw",
+		"CopyImage", "BlitImage", "ClearDepthStencilImage", "DrawIndirect", "ExecuteCommands", "SetLineWidth",
+		"BeginQuery", "EndQuery", "ResetQueryPool", "WriteTimestamp", "SetEvent" };
 	return t < sizeof(names) / sizeof(names[0]) ? names[t] : "?";
 }
 
@@ -745,6 +1005,58 @@ static void vkv_replay(VkvReplay *R, struct VkCommandBuffer_T *cb) {
 		case VKV_CMD_FF_DRAW:
 			vkv_exec_ff_draw(R, (const VkvCmdFFDraw *)h);
 			break;
+		case VKV_CMD_COPY_IMAGE:
+			vkv_exec_copy_image(R, (const VkvCmdCopyImage *)h);
+			break;
+		case VKV_CMD_BLIT_IMAGE:
+			vkv_exec_blit_image(R, (const VkvCmdBlitImage *)h);
+			break;
+		case VKV_CMD_CLEAR_DS_IMAGE: {
+			const VkvCmdClearDSImage *c = (const VkvCmdClearDSImage *)h;
+			c->img->pendingDepthClear = true;
+			c->img->clearDepth = c->v.depth;
+			c->img->clearStencil = c->v.stencil;
+			break;
+		}
+		case VKV_CMD_DRAW_INDIRECT:
+			vkv_exec_draw_indirect(R, (const VkvCmdDrawIndirect *)h);
+			break;
+		case VKV_CMD_EXECUTE: {
+			const VkvCmdExecute *c = (const VkvCmdExecute *)h;
+			for (uint32_t i = 0; i < c->n; i++)
+				if (c->cbs[i] && c->cbs[i]->state == VKV_CB_EXECUTABLE) vkv_replay(R, c->cbs[i]);
+			R->pipeDirty = true;
+			break;
+		}
+		case VKV_CMD_LINE_WIDTH:
+			R->lineWidth = ((const VkvCmdLineWidth *)h)->width;
+			R->dynSet |= VKV_DYN_LINE_WIDTH;
+			R->pipeDirty = true;
+			break;
+		case VKV_CMD_QUERY_BEGIN: {
+			const VkvCmdQuery *c = (const VkvCmdQuery *)h;
+			if (R->inScene) vkv_query_begin(R->dev, R->ctx, c->pool, c->first);
+			break;
+		}
+		case VKV_CMD_QUERY_END:
+			if (R->inScene) vkv_query_end(R->ctx);
+			break;
+		case VKV_CMD_QUERY_RESET: {
+			const VkvCmdQuery *c = (const VkvCmdQuery *)h;
+			vkv_query_reset(R->dev, c->pool, c->first, c->count);
+			break;
+		}
+		case VKV_CMD_TIMESTAMP: {
+			const VkvCmdQuery *c = (const VkvCmdQuery *)h;
+			if (c->pool->values) c->pool->values[c->first] = vkv_time_us() * 1000u;
+			c->pool->written[c->first] = 1;
+			break;
+		}
+		case VKV_CMD_SET_EVENT: {
+			const VkvCmdSetEvent *c = (const VkvCmdSetEvent *)h;
+			if (c->event) c->event->set = c->value;
+			break;
+		}
 		default:
 			VKV_ERROR("corrupt command stream (type %u)", (unsigned)h->type);
 			return;

@@ -67,6 +67,18 @@ int main(int argc, char **argv) {
 			fprintf(o, "/* uniform %s <- set %d binding %u +%u */\n", u->name, (int)u->set, (unsigned)u->binding,
 			        (unsigned)u->offset);
 	}
+	for (uint32_t i = 0; i < r.texCount; i++) {
+		const VkvSpirvTexture *t = &r.texs[i];
+		if (t->samplerSet == -1)
+			fprintf(o, "/* TEXUNIT%u <- combined image sampler set %d binding %u */\n", (unsigned)t->unit,
+			        (int)t->imageSet, (unsigned)t->imageBinding);
+		else if (t->samplerSet == -2)
+			fprintf(o, "/* TEXUNIT%u <- image set %d binding %u, no sampler */\n", (unsigned)t->unit, (int)t->imageSet,
+			        (unsigned)t->imageBinding);
+		else
+			fprintf(o, "/* TEXUNIT%u <- image set %d binding %u + sampler set %d binding %u */\n", (unsigned)t->unit,
+			        (int)t->imageSet, (unsigned)t->imageBinding, (int)t->samplerSet, (unsigned)t->samplerBinding);
+	}
 	fputs(r.cg, o);
 	if (outPath) fclose(o);
 	vkv_spirv_free(&r);

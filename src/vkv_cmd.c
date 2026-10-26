@@ -58,16 +58,13 @@ VKAPI_ATTR VkResult VKAPI_CALL vkResetCommandPool(VkDevice device, VkCommandPool
 VKAPI_ATTR VkResult VKAPI_CALL vkAllocateCommandBuffers(VkDevice device, const VkCommandBufferAllocateInfo *ai,
                                                         VkCommandBuffer *pBuffers) {
 	VkvCmdPool *p = VKV_ND(VkvCmdPool, ai->commandPool);
-	if (ai->level != VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
-		VKV_UNSUPPORTED("secondary command buffers");
-		return VK_ERROR_FEATURE_NOT_PRESENT;
-	}
 	for (uint32_t i = 0; i < ai->commandBufferCount; i++) {
 		struct VkCommandBuffer_T *cb = calloc(1, sizeof(*cb));
 		if (!cb) return VK_ERROR_OUT_OF_HOST_MEMORY;
 		cb->obj.magic = VKV_MAGIC_CMDBUF;
 		cb->device = device;
 		cb->pool = p;
+		cb->secondary = ai->level == VK_COMMAND_BUFFER_LEVEL_SECONDARY;
 		cb->next = p->buffers;
 		if (p->buffers) p->buffers->prev = cb;
 		p->buffers = cb;
@@ -90,6 +87,10 @@ VKAPI_ATTR VkResult VKAPI_CALL vkBeginCommandBuffer(VkCommandBuffer cb, const Vk
 	vkv_cb_reset(cb, false);
 	cb->state = VKV_CB_RECORDING;
 	cb->usage = bi ? bi->flags : 0;
+	if (cb->secondary && bi && (bi->flags & VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT) && bi->pInheritanceInfo) {
+		cb->inRenderPass = true;
+		cb->rp = VKV_ND(VkvRenderPass, bi->pInheritanceInfo->renderPass);
+	}
 	return VK_SUCCESS;
 }
 
@@ -97,7 +98,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkEndCommandBuffer(VkCommandBuffer cb) {
 	VKV_TRACE("vkEndCommandBuffer");
 	if (VKV_CHECK(cb->state == VKV_CB_RECORDING, "vkEndCommandBuffer on a buffer that is not recording"))
 		return VK_ERROR_UNKNOWN;
-	if (VKV_CHECK(!cb->inRenderPass, "vkEndCommandBuffer inside a render pass")) return VK_ERROR_UNKNOWN;
+	if (VKV_CHECK(cb->secondary || !cb->inRenderPass, "vkEndCommandBuffer inside a render pass")) return VK_ERROR_UNKNOWN;
 	cb->state = VKV_CB_EXECUTABLE;
 	return cb->oom ? VK_ERROR_OUT_OF_HOST_MEMORY : VK_SUCCESS;
 }
@@ -277,8 +278,8 @@ VKAPI_ATTR void VKAPI_CALL vkCmdSetStencilReference(VkCommandBuffer cb, VkStenci
 	vkv_cmd_stencil(cb, VKV_DYN_STENCIL_REF, f, r);
 }
 VKAPI_ATTR void VKAPI_CALL vkCmdSetLineWidth(VkCommandBuffer cb, float w) {
-	(void)cb;
-	if (w != 1.0f) VKV_UNSUPPORTED("line widths other than 1.0");
+	VkvCmdLineWidth *c = VKV_CMD(cb, VkvCmdLineWidth, VKV_CMD_LINE_WIDTH);
+	if (c) c->width = w;
 }
 VKAPI_ATTR void VKAPI_CALL vkCmdSetBlendConstants(VkCommandBuffer cb, const float c[4]) {
 	(void)cb; (void)c;
@@ -332,15 +333,30 @@ VKAPI_ATTR void VKAPI_CALL vkCmdDrawIndexed(VkCommandBuffer cb, uint32_t indexCo
 	c->firstInstance = firstInstance;
 }
 
+/* The draw parameters are read from the buffer when the command buffer is submitted. */
+static void vkv_record_indirect(VkCommandBuffer cb, VkBuffer b, VkDeviceSize o, uint32_t n, uint32_t s, bool indexed,
+                                const char *fn) {
+	if (!n || !vkv_draw_checks(cb, fn)) return;
+	VkvBuffer *buf = VKV_ND(VkvBuffer, b);
+	if (VKV_CHECK(VKV_OBJ_OK(buf, VKV_MAGIC_BUFFER) && buf->ptr, "%s: invalid indirect buffer", fn)) return;
+	VkvCmdDrawIndirect *c = VKV_CMD(cb, VkvCmdDrawIndirect, VKV_CMD_DRAW_INDIRECT);
+	if (!c) return;
+	c->buf = buf;
+	c->off = (uint32_t)o;
+	c->count = n;
+	c->stride = n > 1 ? s : (indexed ? sizeof(VkDrawIndexedIndirectCommand) : sizeof(VkDrawIndirectCommand));
+	c->indexed = indexed;
+}
+
 VKAPI_ATTR void VKAPI_CALL vkCmdDrawIndirect(VkCommandBuffer cb, VkBuffer b, VkDeviceSize o, uint32_t n, uint32_t s) {
-	(void)cb; (void)b; (void)o; (void)n; (void)s;
-	VKV_UNSUPPORTED("indirect draws");
+	VKV_TRACE("vkCmdDrawIndirect");
+	vkv_record_indirect(cb, b, o, n, s, false, __func__);
 }
 
 VKAPI_ATTR void VKAPI_CALL vkCmdDrawIndexedIndirect(VkCommandBuffer cb, VkBuffer b, VkDeviceSize o, uint32_t n,
                                                     uint32_t s) {
-	(void)cb; (void)b; (void)o; (void)n; (void)s;
-	VKV_UNSUPPORTED("indirect draws");
+	VKV_TRACE("vkCmdDrawIndexedIndirect");
+	vkv_record_indirect(cb, b, o, n, s, true, __func__);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -420,18 +436,25 @@ VKAPI_ATTR void VKAPI_CALL vkCmdClearAttachments(VkCommandBuffer cb, uint32_t na
 VKAPI_ATTR void VKAPI_CALL vkCmdClearColorImage(VkCommandBuffer cb, VkImage image, VkImageLayout layout,
                                                 const VkClearColorValue *color, uint32_t n,
                                                 const VkImageSubresourceRange *ranges) {
-	(void)layout; (void)n; (void)ranges;
+	(void)layout;
 	if (VKV_CHECK(!cb->inRenderPass, "vkCmdClearColorImage inside a render pass")) return;
-	VkvCmdClearColorImage *c = VKV_CMD(cb, VkvCmdClearColorImage, VKV_CMD_CLEAR_COLOR_IMAGE);
+	VkvCmdClearColorImage *c = vkv_cmd_alloc(cb, VKV_CMD_CLEAR_COLOR_IMAGE,
+	                                         sizeof(VkvCmdClearColorImage) + n * sizeof(VkImageSubresourceRange));
 	if (!c) return;
 	c->img = VKV_ND(VkvImage, image);
 	c->c = *color;
+	c->n = n;
+	memcpy(c->ranges, ranges, n * sizeof(VkImageSubresourceRange));
 }
 
 VKAPI_ATTR void VKAPI_CALL vkCmdClearDepthStencilImage(VkCommandBuffer cb, VkImage image, VkImageLayout layout,
 	const VkClearDepthStencilValue *v, uint32_t n, const VkImageSubresourceRange *ranges) {
-	(void)cb; (void)image; (void)layout; (void)v; (void)n; (void)ranges;
-	VKV_UNSUPPORTED("vkCmdClearDepthStencilImage (use loadOp CLEAR)");
+	(void)layout; (void)n; (void)ranges;
+	if (VKV_CHECK(!cb->inRenderPass, "vkCmdClearDepthStencilImage inside a render pass")) return;
+	VkvCmdClearDSImage *c = VKV_CMD(cb, VkvCmdClearDSImage, VKV_CMD_CLEAR_DS_IMAGE);
+	if (!c) return;
+	c->img = VKV_ND(VkvImage, image);
+	c->v = *v;
 }
 
 VKAPI_ATTR void VKAPI_CALL vkCmdPipelineBarrier(VkCommandBuffer cb, VkPipelineStageFlags src, VkPipelineStageFlags dst,
@@ -448,12 +471,107 @@ VKAPI_ATTR void VKAPI_CALL vkCmdPipelineBarrier(VkCommandBuffer cb, VkPipelineSt
 
 VKAPI_ATTR void VKAPI_CALL vkCmdCopyImage(VkCommandBuffer cb, VkImage s, VkImageLayout sl, VkImage d, VkImageLayout dl,
                                           uint32_t n, const VkImageCopy *r) {
-	(void)cb; (void)s; (void)sl; (void)d; (void)dl; (void)n; (void)r;
-	VKV_UNSUPPORTED("vkCmdCopyImage (copy through a buffer instead)");
+	VKV_TRACE("vkCmdCopyImage");
+	(void)sl; (void)dl;
+	VkvCmdCopyImage *c = vkv_cmd_alloc(cb, VKV_CMD_COPY_IMAGE, sizeof(VkvCmdCopyImage) + n * sizeof(VkImageCopy));
+	if (!c) return;
+	c->src = VKV_ND(VkvImage, s);
+	c->dst = VKV_ND(VkvImage, d);
+	c->n = n;
+	memcpy(c->r, r, n * sizeof(VkImageCopy));
+	if (vkv_validate() && (c->src->fi->bpp != c->dst->fi->bpp || c->src->fi->block != c->dst->fi->block))
+		vkv_fail(__func__, "source and destination formats have different texel sizes");
 }
 
 VKAPI_ATTR void VKAPI_CALL vkCmdBlitImage(VkCommandBuffer cb, VkImage s, VkImageLayout sl, VkImage d, VkImageLayout dl,
                                           uint32_t n, const VkImageBlit *r, VkFilter f) {
-	(void)cb; (void)s; (void)sl; (void)d; (void)dl; (void)n; (void)r; (void)f;
-	VKV_UNSUPPORTED("vkCmdBlitImage (mipmap generation is not available)");
+	VKV_TRACE("vkCmdBlitImage");
+	(void)sl; (void)dl;
+	VkvCmdBlitImage *c = vkv_cmd_alloc(cb, VKV_CMD_BLIT_IMAGE, sizeof(VkvCmdBlitImage) + n * sizeof(VkImageBlit));
+	if (!c) return;
+	c->src = VKV_ND(VkvImage, s);
+	c->dst = VKV_ND(VkvImage, d);
+	c->filter = f;
+	c->n = n;
+	memcpy(c->r, r, n * sizeof(VkImageBlit));
+	if (vkv_validate() && (c->src->fi->block || c->dst->fi->block))
+		vkv_fail(__func__, "blits between compressed images are not possible");
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdExecuteCommands(VkCommandBuffer cb, uint32_t n, const VkCommandBuffer *cbs) {
+	VKV_TRACE("vkCmdExecuteCommands");
+	VkvCmdExecute *c = vkv_cmd_alloc(cb, VKV_CMD_EXECUTE, sizeof(VkvCmdExecute) + n * sizeof(cbs[0]));
+	if (!c) return;
+	c->n = n;
+	for (uint32_t i = 0; i < n; i++) {
+		c->cbs[i] = cbs[i];
+		if (VKV_CHECK(cbs[i] && cbs[i]->secondary, "vkCmdExecuteCommands: buffer %u is not a secondary command buffer",
+		              (unsigned)i))
+			c->cbs[i] = NULL;
+	}
+}
+
+/* ------------------------------------------------------------------------ */
+/* Queries and events                                                       */
+/* ------------------------------------------------------------------------ */
+static void vkv_record_query(VkCommandBuffer cb, VkvCmdType type, VkQueryPool pool, uint32_t first, uint32_t count) {
+	VkvQueryPool *p = VKV_ND(VkvQueryPool, pool);
+	if (VKV_CHECK(VKV_OBJ_OK(p, VKV_MAGIC_QPOOL), "invalid query pool")) return;
+	if (VKV_CHECK(first + count <= p->count, "query %u out of range", (unsigned)(first + count - 1))) return;
+	VkvCmdQuery *c = VKV_CMD(cb, VkvCmdQuery, type);
+	if (!c) return;
+	c->pool = p;
+	c->first = first;
+	c->count = count;
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdBeginQuery(VkCommandBuffer cb, VkQueryPool pool, uint32_t query, VkQueryControlFlags f) {
+	(void)f;
+	if (VKV_CHECK(cb->inRenderPass, "vkCmdBeginQuery outside a render pass (GXM counts inside scenes)")) return;
+	vkv_record_query(cb, VKV_CMD_QUERY_BEGIN, pool, query, 1);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdEndQuery(VkCommandBuffer cb, VkQueryPool pool, uint32_t query) {
+	vkv_record_query(cb, VKV_CMD_QUERY_END, pool, query, 1);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdResetQueryPool(VkCommandBuffer cb, VkQueryPool pool, uint32_t first, uint32_t count) {
+	vkv_record_query(cb, VKV_CMD_QUERY_RESET, pool, first, count);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdWriteTimestamp(VkCommandBuffer cb, VkPipelineStageFlagBits stage, VkQueryPool pool,
+                                               uint32_t query) {
+	(void)stage;
+	vkv_record_query(cb, VKV_CMD_TIMESTAMP, pool, query, 1);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdCopyQueryPoolResults(VkCommandBuffer cb, VkQueryPool pool, uint32_t first,
+	uint32_t count, VkBuffer dst, VkDeviceSize off, VkDeviceSize stride, VkQueryResultFlags flags) {
+	(void)cb; (void)pool; (void)first; (void)count; (void)dst; (void)off; (void)stride; (void)flags;
+	VKV_UNSUPPORTED("vkCmdCopyQueryPoolResults (use vkGetQueryPoolResults)");
+}
+
+static void vkv_record_event(VkCommandBuffer cb, VkEvent event, bool value) {
+	VkvCmdSetEvent *c = VKV_CMD(cb, VkvCmdSetEvent, VKV_CMD_SET_EVENT);
+	if (!c) return;
+	c->event = VKV_ND(VkvEvent, event);
+	c->value = value;
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdSetEvent(VkCommandBuffer cb, VkEvent event, VkPipelineStageFlags stage) {
+	(void)stage;
+	vkv_record_event(cb, event, true);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdResetEvent(VkCommandBuffer cb, VkEvent event, VkPipelineStageFlags stage) {
+	(void)stage;
+	vkv_record_event(cb, event, false);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdWaitEvents(VkCommandBuffer cb, uint32_t n, const VkEvent *events,
+	VkPipelineStageFlags src, VkPipelineStageFlags dst, uint32_t nm, const VkMemoryBarrier *mb, uint32_t nb,
+	const VkBufferMemoryBarrier *bb, uint32_t ni, const VkImageMemoryBarrier *ib) {
+	(void)n; (void)events;
+	/* one in-order queue: waiting on an event is a barrier */
+	vkCmdPipelineBarrier(cb, src, dst, 0, nm, mb, nb, bb, ni, ib);
 }

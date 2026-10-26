@@ -26,10 +26,22 @@ typedef struct VkvSpirvUniform {
 	VkvSpirvScalar scalar;
 } VkvSpirvUniform;
 
+/* A GXM texture unit and the descriptors that feed it. samplerSet is -1 when
+ * the image is a combined image sampler, -2 when no sampler is used. */
+typedef struct VkvSpirvTexture {
+	uint32_t unit;
+	int32_t  imageSet;
+	uint32_t imageBinding;
+	int32_t  samplerSet;
+	uint32_t samplerBinding;
+} VkvSpirvTexture;
+
 typedef struct VkvSpirvResult {
 	char            *cg;
 	VkvSpirvUniform *unis;
 	uint32_t         uniCount;
+	VkvSpirvTexture *texs;
+	uint32_t         texCount;
 } VkvSpirvResult;
 
 typedef enum VkvSpirvLogLevel { VKV_SPIRV_LOG_INFO = 0, VKV_SPIRV_LOG_WARN = 1, VKV_SPIRV_LOG_ERROR = 2 } VkvSpirvLogLevel;

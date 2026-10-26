@@ -262,6 +262,7 @@ static void vkv_device_teardown(struct VkDevice_T *d) {
 	vkv_free_fragment_usse(d->fragUsseRingUid);
 	vkv_gpu_free(&d->linearIdx16);
 	vkv_gpu_free(&d->linearIdx32);
+	vkv_gpu_free(&d->visBuf);
 	vkv_pool_destroy(&d->pool);
 	free(d->ctxHostMem);
 	if (s_gxmInitialized) { sceGxmTerminate(); s_gxmInitialized = false; }
@@ -284,7 +285,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice pd, const VkDevic
 	if (ci->pEnabledFeatures) {
 		const VkPhysicalDeviceFeatures *f = ci->pEnabledFeatures;
 		if (f->geometryShader || f->tessellationShader || f->multiViewport || f->samplerAnisotropy ||
-		    f->textureCompressionBC || f->shaderFloat64 || f->wideLines || f->largePoints)
+		    f->shaderFloat64 || f->largePoints)
 			VKV_WARN("vkCreateDevice: some requested features are not available and will be ignored");
 	}
 
@@ -380,6 +381,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice pd, const VkDevic
 	}
 
 	d->notifRegion = sceGxmGetNotificationRegion();
+	vkv_vis_init(d);
 
 	/* 0..65535 index list for vkCmdDraw */
 	d->linearIdx16Count = 65536;
@@ -498,8 +500,8 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateBuffer(VkDevice device, const VkBufferCre
 	(void)device; (void)alloc;
 	if (VKV_CHECK(ci->size > 0, "buffer size is 0")) return VK_ERROR_INITIALIZATION_FAILED;
 	if (ci->usage & (VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT |
-	                 VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT))
-		VKV_UNSUPPORTED("storage/texel/indirect buffer usage (buffer created, but those uses will not work)");
+	                 VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT))
+		VKV_UNSUPPORTED("storage/texel buffer usage (buffer created, but those uses will not work)");
 	VkvBuffer *b = calloc(1, sizeof(*b));
 	if (!b) return VK_ERROR_OUT_OF_HOST_MEMORY;
 	b->obj.magic = VKV_MAGIC_BUFFER;
@@ -544,22 +546,122 @@ VKAPI_ATTR VkResult VKAPI_CALL vkBindBufferMemory(VkDevice device, VkBuffer buff
 /* ------------------------------------------------------------------------ */
 /* Images                                                                   */
 /* ------------------------------------------------------------------------ */
+static bool vkv_is_pot(uint32_t v) { return v && !(v & (v - 1)); }
+
+static uint32_t vkv_log2(uint32_t v) {
+	uint32_t r = 0;
+	while (v >>= 1) r++;
+	return r;
+}
+
+/* Bits of x go to the even positions, bits of y to the odd ones. */
+static uint32_t vkv_morton(uint32_t x, uint32_t y) {
+	uint32_t r = 0;
+	for (uint32_t b = 0; b < 16 && (x >> b || y >> b); b++)
+		r |= ((x >> b) & 1u) << (2 * b) | ((y >> b) & 1u) << (2 * b + 1);
+	return r;
+}
+
+/* GXM swizzled layout for power-of-two sizes: Morton order inside squares
+ * of the shorter side, squares placed one after another along the longer one. */
+uint32_t vkv_swizzle_index(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+	if (w == h) return vkv_morton(x, y);
+	if (w > h) {
+		uint32_t k = vkv_log2(h);
+		return ((x >> k) << (2 * k)) + vkv_morton(x & (h - 1), y);
+	}
+	uint32_t k = vkv_log2(w);
+	return ((y >> k) << (2 * k)) + vkv_morton(x, y & (w - 1));
+}
+
+uint32_t vkv_image_level_width(const VkvImage *img, uint32_t level) { return VKV_MAX(img->width >> level, 1u); }
+uint32_t vkv_image_level_height(const VkvImage *img, uint32_t level) { return VKV_MAX(img->height >> level, 1u); }
+
+/* Width/height of a level in elements: texels, or 4x4 blocks for compressed formats. */
+void vkv_image_level_elems(const VkvImage *img, uint32_t level, uint32_t *ew, uint32_t *eh) {
+	uint32_t w = vkv_image_level_width(img, level), h = vkv_image_level_height(img, level);
+	if (img->fi->block) { w = (w + 3) / 4; h = (h + 3) / 4; }
+	*ew = w;
+	*eh = h;
+}
+
+uint8_t *vkv_image_level_ptr(const VkvImage *img, uint32_t level, uint32_t layer) {
+	return img->ptr + (size_t)layer * img->layerSize + img->levelOffset[level];
+}
+
+/* Address of one element (texel or block) of a level. */
+uint8_t *vkv_image_elem(const VkvImage *img, uint32_t level, uint32_t layer, uint32_t ex, uint32_t ey) {
+	uint8_t *base = vkv_image_level_ptr(img, level, layer);
+	if (img->swizzled) {
+		uint32_t ew, eh;
+		vkv_image_level_elems(img, level, &ew, &eh);
+		return base + (size_t)vkv_swizzle_index(ex, ey, ew, eh) * img->fi->bpp;
+	}
+	return base + (size_t)ey * img->levelPitch[level] + (size_t)ex * img->fi->bpp;
+}
+
 void vkv_image_setup_layout(VkvImage *img) {
-	if (img->fi->isDepth) {
+	const VkvFormatInfo *fi = img->fi;
+	img->levels = 1;
+	img->layers = 1;
+	if (fi->isDepth) {
 		img->alignedW = VKV_ALIGN(img->width, SCE_GXM_TILE_SIZEX);
 		img->alignedH = VKV_ALIGN(img->height, SCE_GXM_TILE_SIZEY);
 		img->rowPitch = img->alignedW * 4;
-		img->size = img->alignedW * img->alignedH * 4;
+		img->levelPitch[0] = img->rowPitch;
+		img->levelOffset[0] = 0;
+		img->size = img->layerSize = img->alignedW * img->alignedH * 4;
 		img->alignment = 4096;
-	} else {
-		/* GXM linear textures and color surfaces use an 8 texel aligned stride */
-		uint32_t stride = img->swapchain ? VKV_ALIGN(img->width, 64) : VKV_ALIGN(img->width, 8);
-		img->alignedW = stride;
-		img->alignedH = img->height;
-		img->rowPitch = stride * img->fi->bpp;
-		img->size = VKV_ALIGN(img->rowPitch * img->height, 16);
-		img->alignment = (img->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) ? 4096 : 256;
+		return;
 	}
+	bool pot = vkv_is_pot(img->width) && vkv_is_pot(img->height);
+	uint32_t maxLevels = vkv_log2(VKV_MAX(img->width, img->height)) + 1;
+	img->levels = VKV_MIN(VKV_MAX(img->mipLevels, 1u), VKV_MIN(maxLevels, (uint32_t)VKV_MAX_LEVELS));
+	if (img->levels > 1 && !pot) {
+		VKV_UNSUPPORTED("mipmaps on non-power-of-two images (only level 0 is stored)");
+		img->levels = 1;
+	}
+	if (img->cube) {
+		img->layers = 6;
+		if (img->width != img->height || !pot) {
+			VKV_UNSUPPORTED("cube maps that are not square power-of-two sizes");
+		}
+		if (img->levels > 1) {
+			VKV_UNSUPPORTED("mipmapped cube maps (only level 0 is stored)");
+			img->levels = 1;
+		}
+		img->swizzled = true;
+	}
+	if (fi->block) {
+		if (!pot) VKV_UNSUPPORTED("compressed textures that are not power-of-two sized");
+		img->swizzled = true;
+	}
+
+	uint32_t total = 0;
+	for (uint32_t l = 0; l < img->levels; l++) {
+		uint32_t w = vkv_image_level_width(img, l), h = vkv_image_level_height(img, l), size;
+		if (fi->block) {
+			uint32_t bw = (w + 3) / 4, bh = (h + 3) / 4;
+			img->levelPitch[l] = bw * fi->bpp;
+			size = bw * bh * fi->bpp;
+		} else if (img->swizzled) {
+			img->levelPitch[l] = w * fi->bpp;
+			size = VKV_ALIGN(w, 8) * h * fi->bpp;
+		} else {
+			/* GXM linear textures and color surfaces use an 8 texel aligned stride */
+			uint32_t stride = img->swapchain ? VKV_ALIGN(w, 64) : VKV_ALIGN(w, 8);
+			img->levelPitch[l] = stride * fi->bpp;
+			size = img->levelPitch[l] * h;
+		}
+		img->levelOffset[l] = total;
+		total += VKV_ALIGN(size, 16);
+	}
+	img->layerSize = VKV_ALIGN(total, 16);
+	img->alignedW = fi->block ? img->width : img->levelPitch[0] / fi->bpp;
+	img->alignedH = img->height;
+	img->rowPitch = img->levelPitch[0];
+	img->size = img->layerSize * img->layers;
+	img->alignment = (img->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) ? 4096 : 256;
 }
 
 VkResult vkv_image_ensure_sync(VkvImage *img) {
@@ -586,8 +688,14 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateImage(VkDevice device, const VkImageCreat
 		return VK_ERROR_FORMAT_NOT_SUPPORTED;
 	}
 	if (ci->samples != VK_SAMPLE_COUNT_1_BIT) VKV_UNSUPPORTED("multisampled images (rendered single-sampled)");
-	if (ci->mipLevels > 1) VKV_UNSUPPORTED("mipmapped images (only level 0 is stored and sampled)");
-	if (ci->arrayLayers > 1) VKV_UNSUPPORTED("array/cube images (only layer 0 is stored)");
+	bool cube = (ci->flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) && ci->arrayLayers == 6;
+	if (ci->arrayLayers > 1 && !cube) VKV_UNSUPPORTED("array images (only layer 0 is stored)");
+	if (fi->block && (ci->usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT))) {
+		VKV_ERROR("vkCreateImage: compressed formats cannot be render targets");
+		return VK_ERROR_FORMAT_NOT_SUPPORTED;
+	}
+	if (cube && (ci->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT))
+		VKV_UNSUPPORTED("rendering into cube map faces");
 	if (VKV_CHECK(ci->extent.width && ci->extent.height && ci->extent.width <= 4096 && ci->extent.height <= 4096,
 	              "bad image extent %ux%u", (unsigned)ci->extent.width, (unsigned)ci->extent.height))
 		return VK_ERROR_INITIALIZATION_FAILED;
@@ -603,6 +711,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateImage(VkDevice device, const VkImageCreat
 	img->arrayLayers = ci->arrayLayers;
 	img->usage = ci->usage;
 	img->tiling = ci->tiling;
+	img->cube = cube;
 	vkv_image_setup_layout(img);
 	*pImage = VKV_H(VkImage, img);
 	return VK_SUCCESS;
@@ -643,13 +752,17 @@ VKAPI_ATTR VkResult VKAPI_CALL vkBindImageMemory(VkDevice device, VkImage image,
 
 VKAPI_ATTR void VKAPI_CALL vkGetImageSubresourceLayout(VkDevice device, VkImage image,
                                                        const VkImageSubresource *sub, VkSubresourceLayout *l) {
-	(void)device; (void)sub;
+	(void)device;
 	VkvImage *img = VKV_ND(VkvImage, image);
-	l->offset = 0;
-	l->size = img->size;
-	l->rowPitch = img->rowPitch;
-	l->arrayPitch = img->size;
-	l->depthPitch = img->size;
+	uint32_t level = VKV_MIN(sub->mipLevel, img->levels - 1);
+	uint32_t layer = VKV_MIN(sub->arrayLayer, img->layers - 1);
+	if (img->swizzled) VKV_UNSUPPORTED("mapping swizzled (cube or compressed) images directly");
+	l->offset = (size_t)layer * img->layerSize + img->levelOffset[level];
+	l->rowPitch = img->levelPitch[level];
+	l->size = level + 1 < img->levels ? img->levelOffset[level + 1] - img->levelOffset[level]
+	                                  : img->layerSize - img->levelOffset[level];
+	l->arrayPitch = img->layerSize;
+	l->depthPitch = l->size;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -660,16 +773,24 @@ bool vkv_view_build_texture(VkvImageView *v) {
 	VkvImage *img = v->image;
 	v->texValid = false;
 	if (!fi || !fi->tex || !img->ptr) return false;
-	if (fi->bpp != img->fi->bpp) {
+	if (fi->bpp != img->fi->bpp || fi->block != img->fi->block) {
 		VKV_WARN("image view format %d has a different texel size than its image", (int)v->format);
 		return false;
 	}
-	int r = sceGxmTextureInitLinear(&v->tex, img->ptr, fi->tex, img->width, img->height, 0);
+	uint32_t w = vkv_image_level_width(img, v->baseLevel), h = vkv_image_level_height(img, v->baseLevel);
+	void *data = vkv_image_level_ptr(img, v->baseLevel, v->cube ? 0 : v->baseLayer);
+	int r;
+	/* mipCount 0 tells GXM the cube has no mip chain, so the faces follow each other
+	 * directly; any other count makes every face span a full chain */
+	if (v->cube) r = sceGxmTextureInitCube(&v->tex, data, fi->tex, w, h, 0);
+	else if (img->swizzled) r = sceGxmTextureInitSwizzled(&v->tex, data, fi->tex, w, h, v->levelCount);
+	else r = sceGxmTextureInitLinear(&v->tex, data, fi->tex, w, h, v->levelCount);
 	if (r < 0) {
-		VKV_ERROR("sceGxmTextureInitLinear(%ux%u fmt %d) failed: 0x%08X", (unsigned)img->width,
-		          (unsigned)img->height, (int)v->format, (unsigned)r);
+		VKV_ERROR("texture init (%ux%u fmt %d, %u levels%s) failed: 0x%08X", (unsigned)w, (unsigned)h, (int)v->format,
+		          (unsigned)v->levelCount, v->cube ? ", cube" : "", (unsigned)r);
 		return false;
 	}
+	if (fi->srgb) sceGxmTextureSetGammaMode(&v->tex, SCE_GXM_TEXTURE_GAMMA_BGR);
 	sceGxmTextureSetMinFilter(&v->tex, SCE_GXM_TEXTURE_FILTER_LINEAR);
 	sceGxmTextureSetMagFilter(&v->tex, SCE_GXM_TEXTURE_FILTER_LINEAR);
 	v->texValid = true;
@@ -683,14 +804,27 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateImageView(VkDevice device, const VkImageV
 	VkvImage *img = VKV_ND(VkvImage, ci->image);
 	if (VKV_CHECK(VKV_OBJ_OK(img, VKV_MAGIC_IMAGE), "invalid image")) return VK_ERROR_UNKNOWN;
 	if (VKV_CHECK(img->ptr != NULL, "image has no memory bound")) return VK_ERROR_UNKNOWN;
-	if (ci->viewType != VK_IMAGE_VIEW_TYPE_2D) VKV_UNSUPPORTED("non-2D image views (treated as 2D)");
-	if (ci->subresourceRange.baseMipLevel || ci->subresourceRange.baseArrayLayer)
-		VKV_UNSUPPORTED("image views of mip levels/layers other than 0");
 	VkvImageView *v = calloc(1, sizeof(*v));
 	if (!v) return VK_ERROR_OUT_OF_HOST_MEMORY;
 	v->obj.magic = VKV_MAGIC_VIEW;
 	v->image = img;
 	v->format = ci->format;
+	v->baseLevel = VKV_MIN(ci->subresourceRange.baseMipLevel, img->levels - 1);
+	uint32_t count = ci->subresourceRange.levelCount == VK_REMAINING_MIP_LEVELS
+	                     ? img->levels - v->baseLevel : ci->subresourceRange.levelCount;
+	v->levelCount = VKV_MAX(VKV_MIN(count, img->levels - v->baseLevel), 1u);
+	v->baseLayer = VKV_MIN(ci->subresourceRange.baseArrayLayer, img->layers - 1);
+	v->cube = img->cube && (ci->viewType == VK_IMAGE_VIEW_TYPE_CUBE || ci->viewType == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY);
+	if (ci->viewType == VK_IMAGE_VIEW_TYPE_CUBE && !img->cube)
+		VKV_UNSUPPORTED("cube views of images created without CUBE_COMPATIBLE and 6 layers");
+	else if (ci->viewType != VK_IMAGE_VIEW_TYPE_2D && ci->viewType != VK_IMAGE_VIEW_TYPE_CUBE)
+		VKV_UNSUPPORTED("array image views (treated as 2D)");
+	const VkComponentMapping *cm = &ci->components;
+	if ((cm->r != VK_COMPONENT_SWIZZLE_IDENTITY && cm->r != VK_COMPONENT_SWIZZLE_R) ||
+	    (cm->g != VK_COMPONENT_SWIZZLE_IDENTITY && cm->g != VK_COMPONENT_SWIZZLE_G) ||
+	    (cm->b != VK_COMPONENT_SWIZZLE_IDENTITY && cm->b != VK_COMPONENT_SWIZZLE_B) ||
+	    (cm->a != VK_COMPONENT_SWIZZLE_IDENTITY && cm->a != VK_COMPONENT_SWIZZLE_A))
+		VKV_UNSUPPORTED("image view component swizzles (ignored)");
 	if (!img->fi->isDepth) vkv_view_build_texture(v);
 	*pView = VKV_H(VkImageView, v);
 	return VK_SUCCESS;
@@ -724,10 +858,16 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateSampler(VkDevice device, const VkSamplerC
 	s->obj.magic = VKV_MAGIC_SAMPLER;
 	s->minFilter = ci->minFilter == VK_FILTER_NEAREST ? SCE_GXM_TEXTURE_FILTER_POINT : SCE_GXM_TEXTURE_FILTER_LINEAR;
 	s->magFilter = ci->magFilter == VK_FILTER_NEAREST ? SCE_GXM_TEXTURE_FILTER_POINT : SCE_GXM_TEXTURE_FILTER_LINEAR;
+	s->mipFilter = ci->mipmapMode == VK_SAMPLER_MIPMAP_MODE_LINEAR ? SCE_GXM_TEXTURE_MIP_FILTER_ENABLED
+	                                                               : SCE_GXM_TEXTURE_MIP_FILTER_DISABLED;
 	s->addrU = vkv_addr_mode(ci->addressModeU);
 	s->addrV = vkv_addr_mode(ci->addressModeV);
+	/* maxLod limits how many levels are sampled; 0.25 is the usual "no mipmaps" value */
+	float maxLod = ci->maxLod < 0.0f ? 0.0f : ci->maxLod;
+	s->maxLevels = maxLod >= (float)VKV_MAX_LEVELS ? VKV_MAX_LEVELS : (uint32_t)maxLod + 1;
 	if (ci->anisotropyEnable) VKV_UNSUPPORTED("anisotropic filtering");
 	if (ci->compareEnable) VKV_UNSUPPORTED("depth compare samplers");
+	if (ci->minLod > 0.0f) VKV_UNSUPPORTED("sampler minLod");
 	*pSampler = VKV_H(VkSampler, s);
 	return VK_SUCCESS;
 }
@@ -740,12 +880,16 @@ VKAPI_ATTR void VKAPI_CALL vkDestroySampler(VkDevice device, VkSampler sampler, 
 	free(s);
 }
 
-void vkv_texture_apply_sampler(SceGxmTexture *tex, const VkvSampler *s) {
+void vkv_texture_apply_sampler(SceGxmTexture *tex, const VkvSampler *s, uint32_t levels) {
 	if (!s) return;
 	sceGxmTextureSetMinFilter(tex, s->minFilter);
 	sceGxmTextureSetMagFilter(tex, s->magFilter);
 	sceGxmTextureSetUAddrMode(tex, s->addrU);
 	sceGxmTextureSetVAddrMode(tex, s->addrV);
+	if (levels > 1) {
+		sceGxmTextureSetMipFilter(tex, s->mipFilter);
+		if (s->maxLevels < levels) sceGxmTextureSetMipmapCount(tex, s->maxLevels);
+	}
 }
 
 /* ------------------------------------------------------------------------ */

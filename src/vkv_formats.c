@@ -10,12 +10,12 @@
 #define OR(f)  SCE_GXM_OUTPUT_REGISTER_FORMAT_##f
 #define XF(f)  SCE_GXM_TRANSFER_FORMAT_##f
 
-/*            vk format                      bpp dep rnd cmp tex                       color                 attrib     outReg   xfer */
+/*            vk format                      bpp dep rnd cmp tex                       color                 attrib     outReg   xfer  block srgb */
 static const VkvFormatInfo k_formats[] = {
 	{ VK_FORMAT_R8G8B8A8_UNORM,               4, 0, 1, 4, TX(U8U8U8U8_ABGR),        CF(U8U8U8U8_ABGR),  AF(U8N),  OR(UCHAR4), XF(RAW32) },
-	{ VK_FORMAT_R8G8B8A8_SRGB,                4, 0, 1, 4, TX(U8U8U8U8_ABGR),        CF(U8U8U8U8_ABGR),  AF(U8N),  OR(UCHAR4), XF(RAW32) },
+	{ VK_FORMAT_R8G8B8A8_SRGB,                4, 0, 1, 4, TX(U8U8U8U8_ABGR),        CF(U8U8U8U8_ABGR),  AF(U8N),  OR(UCHAR4), XF(RAW32), 0, 1 },
 	{ VK_FORMAT_B8G8R8A8_UNORM,               4, 0, 1, 0, TX(U8U8U8U8_ARGB),        CF(U8U8U8U8_ARGB),  AF(U8N),  OR(UCHAR4), XF(RAW32) },
-	{ VK_FORMAT_B8G8R8A8_SRGB,                4, 0, 1, 0, TX(U8U8U8U8_ARGB),        CF(U8U8U8U8_ARGB),  AF(U8N),  OR(UCHAR4), XF(RAW32) },
+	{ VK_FORMAT_B8G8R8A8_SRGB,                4, 0, 1, 0, TX(U8U8U8U8_ARGB),        CF(U8U8U8U8_ARGB),  AF(U8N),  OR(UCHAR4), XF(RAW32), 0, 1 },
 	{ VK_FORMAT_R8G8B8A8_SNORM,               4, 0, 0, 4, 0,                        0,                  AF(S8N),  OR(UCHAR4), XF(RAW32) },
 	{ VK_FORMAT_R8G8B8A8_UINT,                4, 0, 0, 4, 0,                        0,                  AF(U8),   OR(UCHAR4), XF(RAW32) },
 	{ VK_FORMAT_R8G8B8A8_SINT,                4, 0, 0, 4, 0,                        0,                  AF(S8),   OR(UCHAR4), XF(RAW32) },
@@ -49,6 +49,17 @@ static const VkvFormatInfo k_formats[] = {
 	{ VK_FORMAT_R8G8_UINT,                    2, 0, 0, 2, 0,                        0,                  AF(U8),   OR(UCHAR4), 0 },
 	{ VK_FORMAT_R8G8_SINT,                    2, 0, 0, 2, 0,                        0,                  AF(S8),   OR(UCHAR4), 0 },
 	{ VK_FORMAT_R8_UINT,                      1, 0, 0, 1, 0,                        0,                  AF(U8),   OR(UCHAR4), 0 },
+	/* block compressed, stored swizzled; bpp is the block size */
+	{ VK_FORMAT_BC1_RGB_UNORM_BLOCK,          8, 0, 0, 0, TX(UBC1_1BGR),            0,                  0,        OR(UCHAR4), 0, 8, 0 },
+	{ VK_FORMAT_BC1_RGB_SRGB_BLOCK,           8, 0, 0, 0, TX(UBC1_1BGR),            0,                  0,        OR(UCHAR4), 0, 8, 1 },
+	{ VK_FORMAT_BC1_RGBA_UNORM_BLOCK,         8, 0, 0, 0, TX(UBC1_ABGR),            0,                  0,        OR(UCHAR4), 0, 8, 0 },
+	{ VK_FORMAT_BC1_RGBA_SRGB_BLOCK,          8, 0, 0, 0, TX(UBC1_ABGR),            0,                  0,        OR(UCHAR4), 0, 8, 1 },
+	{ VK_FORMAT_BC2_UNORM_BLOCK,             16, 0, 0, 0, TX(UBC2_ABGR),            0,                  0,        OR(UCHAR4), 0, 16, 0 },
+	{ VK_FORMAT_BC2_SRGB_BLOCK,              16, 0, 0, 0, TX(UBC2_ABGR),            0,                  0,        OR(UCHAR4), 0, 16, 1 },
+	{ VK_FORMAT_BC3_UNORM_BLOCK,             16, 0, 0, 0, TX(UBC3_ABGR),            0,                  0,        OR(UCHAR4), 0, 16, 0 },
+	{ VK_FORMAT_BC3_SRGB_BLOCK,              16, 0, 0, 0, TX(UBC3_ABGR),            0,                  0,        OR(UCHAR4), 0, 16, 1 },
+	{ VK_FORMAT_BC4_UNORM_BLOCK,              8, 0, 0, 0, TX(UBC4_R),               0,                  0,        OR(UCHAR4), 0, 8, 0 },
+	{ VK_FORMAT_BC5_UNORM_BLOCK,             16, 0, 0, 0, TX(UBC5_GR),              0,                  0,        OR(UCHAR4), 0, 16, 0 },
 	/* every depth format maps onto the packed S8D24 tiled surface */
 	{ VK_FORMAT_D24_UNORM_S8_UINT,            4, 1, 0, 0, 0,                        0,                  0,        OR(UCHAR4), 0 },
 	{ VK_FORMAT_X8_D24_UNORM_PACK32,          4, 1, 0, 0, 0,                        0,                  0,        OR(UCHAR4), 0 },

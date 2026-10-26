@@ -331,6 +331,19 @@ static SceGxmProgram *vkv_spirv_compile(struct VkDevice_T *dev, VkvShaderModule 
 	for (uint32_t i = 0; i < r.uniCount && ok; i++)
 		ok = vkv_shader_add_uniform(m, r.unis[i].name, r.unis[i].offset, (int8_t)r.unis[i].set,
 		                            (uint8_t)r.unis[i].binding, (uint8_t)r.unis[i].scalar);
+	if (ok && r.texCount) {
+		m->texb[stage] = malloc(r.texCount * sizeof(VkvTexBinding));
+		ok = m->texb[stage] != NULL;
+		for (uint32_t i = 0; ok && i < r.texCount; i++) {
+			m->texb[stage][i].unit = r.texs[i].unit;
+			m->texb[stage][i].imageSet = r.texs[i].imageSet;
+			m->texb[stage][i].imageBinding = r.texs[i].imageBinding;
+			m->texb[stage][i].samplerSet = r.texs[i].samplerSet;
+			m->texb[stage][i].samplerBinding = r.texs[i].samplerBinding;
+		}
+		if (ok) m->texCount[stage] = r.texCount;
+	}
+	m->texExplicit[stage] = true;
 	SceGxmProgram *p = ok ? vkv_shark_compile(dev, r.cg, stage, m->name, m->hash, size) : NULL;
 	vkv_spirv_free(&r);
 	return p;
@@ -493,6 +506,7 @@ void vkv_shader_release(VkvShaderModule *m) {
 	free(m->uniSet);
 	free(m->uniBinding);
 	free(m->uniScalar);
+	for (int s = 0; s < VKV_STAGE_COUNT; s++) free(m->texb[s]);
 	free(m->code);
 	m->obj.magic = VKV_MAGIC_DEAD;
 	free(m);

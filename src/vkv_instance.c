@@ -116,8 +116,8 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceProperties(VkPhysicalDevice pd, Vk
 	l->maxImageDimension1D = 4096;
 	l->maxImageDimension2D = 4096;
 	l->maxImageDimension3D = 1;
-	l->maxImageDimensionCube = 0;
-	l->maxImageArrayLayers = 1;
+	l->maxImageDimensionCube = 4096;
+	l->maxImageArrayLayers = 6;
 	l->maxTexelBufferElements = 0;
 	l->maxUniformBufferRange = 65536;
 	l->maxStorageBufferRange = 0;
@@ -164,14 +164,19 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceProperties(VkPhysicalDevice pd, Vk
 	l->sampledImageIntegerSampleCounts = VK_SAMPLE_COUNT_1_BIT;
 	l->storageImageSampleCounts = VK_SAMPLE_COUNT_1_BIT;
 	l->maxSampleMaskWords = 1;
-	l->timestampComputeAndGraphics = VK_FALSE;
+	l->timestampComputeAndGraphics = VK_TRUE;
+	l->timestampPeriod = 1.0f;
+	l->maxSamplerLodBias = 0.0f;
+	l->maxSamplerAnisotropy = 1.0f;
+	l->maxDrawIndirectCount = 0xFFFFFFFFu;
 	l->maxClipDistances = 0;
 	l->maxCullDistances = 0;
 	l->discreteQueuePriorities = 2;
 	l->pointSizeRange[0] = 1.0f;
 	l->pointSizeRange[1] = 1.0f;
 	l->lineWidthRange[0] = 1.0f;
-	l->lineWidthRange[1] = 1.0f;
+	l->lineWidthRange[1] = 16.0f;
+	l->lineWidthGranularity = 1.0f;
 	l->optimalBufferCopyOffsetAlignment = 16;
 	l->optimalBufferCopyRowPitchAlignment = 16;
 	l->nonCoherentAtomSize = 64;
@@ -189,6 +194,11 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFeatures(VkPhysicalDevice pd, VkPh
 	f->depthBiasClamp = VK_FALSE;
 	f->samplerAnisotropy = VK_FALSE;
 	f->fullDrawIndexUint32 = VK_TRUE;
+	f->textureCompressionBC = VK_TRUE;
+	f->wideLines = VK_TRUE;
+	f->multiDrawIndirect = VK_TRUE;
+	f->drawIndirectFirstInstance = VK_TRUE;
+	f->occlusionQueryPrecise = VK_TRUE;
 	f->independentBlend = VK_FALSE;
 	f->shaderClipDistance = VK_FALSE;
 }
@@ -230,7 +240,7 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceQueueFamilyProperties(VkPhysicalDe
 	*pCount = 1;
 	p[0].queueFlags = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_TRANSFER_BIT;
 	p[0].queueCount = 1;
-	p[0].timestampValidBits = 0;
+	p[0].timestampValidBits = 64;
 	p[0].minImageTransferGranularity = (VkExtent3D){ 1, 1, 1 };
 }
 
@@ -243,6 +253,7 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFormatProperties(VkPhysicalDevice 
 	VkFormatFeatureFlags f = 0;
 	if (fi->tex) f |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
 	                  VK_FORMAT_FEATURE_TRANSFER_DST_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
+	if (fi->tex && !fi->block) f |= VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
 	if (fi->renderable) f |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT;
 	if (fi->isDepth) f |= VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
 	p->linearTilingFeatures  = f;
@@ -253,7 +264,7 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFormatProperties(VkPhysicalDevice 
 VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceImageFormatProperties(VkPhysicalDevice pd, VkFormat format,
 	VkImageType type, VkImageTiling tiling, VkImageUsageFlags usage, VkImageCreateFlags flags,
 	VkImageFormatProperties *p) {
-	(void)pd; (void)tiling; (void)flags;
+	(void)pd; (void)tiling;
 	const VkvFormatInfo *fi = vkv_format(format);
 	memset(p, 0, sizeof(*p));
 	if (!fi || type != VK_IMAGE_TYPE_2D) return VK_ERROR_FORMAT_NOT_SUPPORTED;
@@ -261,8 +272,10 @@ VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceImageFormatProperties(VkPhysic
 	if ((usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) && !fi->renderable) return VK_ERROR_FORMAT_NOT_SUPPORTED;
 	if ((usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) && !fi->isDepth) return VK_ERROR_FORMAT_NOT_SUPPORTED;
 	p->maxExtent = (VkExtent3D){ 4096, 4096, 1 };
-	p->maxMipLevels = 1;
-	p->maxArrayLayers = 1;
+	p->maxMipLevels = VKV_MAX_LEVELS;
+	p->maxArrayLayers = (flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) ? 6 : 1;
+	if (fi->block && (usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)))
+		return VK_ERROR_FORMAT_NOT_SUPPORTED;
 	p->sampleCounts = VK_SAMPLE_COUNT_1_BIT;
 	p->maxResourceSize = 64u * 1024 * 1024;
 	return VK_SUCCESS;

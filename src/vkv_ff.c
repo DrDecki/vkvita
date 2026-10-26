@@ -218,7 +218,7 @@ void vkvffBindTexture(VkvFFContext ff, VkImageView view, VkSampler sampler) {
 		return;
 	}
 	ff->tex = v->tex;
-	vkv_texture_apply_sampler(&ff->tex, VKV_ND(VkvSampler, sampler));
+	vkv_texture_apply_sampler(&ff->tex, VKV_ND(VkvSampler, sampler), v->levelCount);
 	ff->hasTexture = true;
 }
 

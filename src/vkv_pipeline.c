@@ -32,12 +32,20 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDescriptorSetLayout(VkDevice device, cons
 		case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
 		case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
 		case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+		case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+		case VK_DESCRIPTOR_TYPE_SAMPLER:
 			break;
 		default:
-			VKV_UNSUPPORTED("descriptor types other than UNIFORM_BUFFER(_DYNAMIC) and COMBINED_IMAGE_SAMPLER");
+			VKV_UNSUPPORTED("storage, texel buffer and input attachment descriptors");
 			break;
 		}
-		if (b->pImmutableSamplers) VKV_UNSUPPORTED("immutable samplers (pass the sampler in the write instead)");
+		if (b->pImmutableSamplers && b->descriptorCount &&
+		    (b->descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER ||
+		     b->descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)) {
+			l->bindings[i].immutable = calloc(b->descriptorCount, sizeof(VkvSampler *));
+			for (uint32_t e = 0; l->bindings[i].immutable && e < b->descriptorCount; e++)
+				l->bindings[i].immutable[e] = VKV_ND(VkvSampler, b->pImmutableSamplers[e]);
+		}
 		if (b->descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER && b->binding >= SCE_GXM_MAX_TEXTURE_UNITS)
 			VKV_WARN("sampler binding %u is beyond the 16 GXM texture units", (unsigned)b->binding);
 		if ((b->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
@@ -65,6 +73,7 @@ VKAPI_ATTR void VKAPI_CALL vkDestroyDescriptorSetLayout(VkDevice device, VkDescr
 	(void)device; (void)alloc;
 	VkvSetLayout *l = VKV_ND(VkvSetLayout, layout);
 	if (!l) return;
+	for (uint32_t i = 0; i < l->bindingCount; i++) free(l->bindings[i].immutable);
 	free(l->bindings);
 	l->obj.magic = VKV_MAGIC_DEAD;
 	free(l);
@@ -128,6 +137,10 @@ VKAPI_ATTR VkResult VKAPI_CALL vkAllocateDescriptorSets(VkDevice device, const V
 				VkvDescriptor *d = &s->desc[l->bindings[b].first + e];
 				d->type = l->bindings[b].type;
 				d->binding = l->bindings[b].binding + e;
+				if (l->bindings[b].immutable) {
+					d->sampler = l->bindings[b].immutable[e];
+					d->valid = d->type == VK_DESCRIPTOR_TYPE_SAMPLER;
+				}
 			}
 		s->next = p->sets;
 		if (p->sets) p->sets->prev = s;
@@ -153,6 +166,14 @@ static VkvDescriptor *vkv_set_find(VkvSet *s, uint32_t binding, uint32_t element
 		uint32_t idx = l->bindings[b].first + element;
 		return idx < s->count ? &s->desc[idx] : NULL;
 	}
+	return NULL;
+}
+
+static VkvSampler *vkv_set_immutable(const VkvSet *s, uint32_t binding, uint32_t element) {
+	const VkvSetLayout *l = s->layout;
+	for (uint32_t b = 0; b < l->bindingCount; b++)
+		if (l->bindings[b].binding == binding)
+			return l->bindings[b].immutable && element < l->bindings[b].count ? l->bindings[b].immutable[element] : NULL;
 	return NULL;
 }
 
@@ -186,10 +207,14 @@ VKAPI_ATTR void VKAPI_CALL vkUpdateDescriptorSets(VkDevice device, uint32_t writ
 					d->valid = false;
 				break;
 			}
-			case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER: {
-				const VkDescriptorImageInfo *ii = &wr->pImageInfo[i];
-				d->view = VKV_ND(VkvImageView, ii->imageView);
-				d->sampler = VKV_ND(VkvSampler, ii->sampler);
+			case VK_DESCRIPTOR_TYPE_SAMPLER: {
+				VkvSampler *imm = vkv_set_immutable(s, wr->dstBinding, wr->dstArrayElement + i);
+				d->sampler = imm ? imm : VKV_ND(VkvSampler, wr->pImageInfo[i].sampler);
+				d->valid = d->sampler != NULL;
+				break;
+			}
+			case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE: {
+				d->view = VKV_ND(VkvImageView, wr->pImageInfo[i].imageView);
 				d->valid = false;
 				if (VKV_CHECK(VKV_OBJ_OK(d->view, VKV_MAGIC_VIEW), "invalid image view")) break;
 				if (!d->view->texValid && !vkv_view_build_texture(d->view)) {
@@ -198,7 +223,23 @@ VKAPI_ATTR void VKAPI_CALL vkUpdateDescriptorSets(VkDevice device, uint32_t writ
 					break;
 				}
 				d->tex = d->view->tex;
-				vkv_texture_apply_sampler(&d->tex, d->sampler);
+				d->valid = true;
+				break;
+			}
+			case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER: {
+				const VkDescriptorImageInfo *ii = &wr->pImageInfo[i];
+				VkvSampler *imm = vkv_set_immutable(s, wr->dstBinding, wr->dstArrayElement + i);
+				d->view = VKV_ND(VkvImageView, ii->imageView);
+				d->sampler = imm ? imm : VKV_ND(VkvSampler, ii->sampler);
+				d->valid = false;
+				if (VKV_CHECK(VKV_OBJ_OK(d->view, VKV_MAGIC_VIEW), "invalid image view")) break;
+				if (!d->view->texValid && !vkv_view_build_texture(d->view)) {
+					VKV_WARN("binding %u: image view format %d cannot be sampled", (unsigned)wr->dstBinding,
+					         (int)d->view->format);
+					break;
+				}
+				d->tex = d->view->tex;
+				vkv_texture_apply_sampler(&d->tex, d->sampler, d->view->levelCount);
 				d->valid = true;
 				break;
 			}
@@ -645,6 +686,12 @@ VkResult vkv_create_pipeline(struct VkDevice_T *dev, const VkGraphicsPipelineCre
 	                                     p->funi, VKV_MAX_UNIFORM_MAP);
 	p->vDefaultSize = sceGxmProgramGetDefaultUniformBufferSize(p->vprog);
 	p->fDefaultSize = sceGxmProgramGetDefaultUniformBufferSize(p->fprog);
+	p->texb[VKV_STAGE_VERTEX] = vmod->texb[VKV_STAGE_VERTEX];
+	p->texCount[VKV_STAGE_VERTEX] = vmod->texCount[VKV_STAGE_VERTEX];
+	p->texb[VKV_STAGE_FRAGMENT] = fmod->texb[VKV_STAGE_FRAGMENT];
+	p->texCount[VKV_STAGE_FRAGMENT] = fmod->texCount[VKV_STAGE_FRAGMENT];
+	p->texExplicit[VKV_STAGE_VERTEX] = vmod->texExplicit[VKV_STAGE_VERTEX];
+	p->texExplicit[VKV_STAGE_FRAGMENT] = fmod->texExplicit[VKV_STAGE_FRAGMENT];
 
 	/* --- reflection used by draw-time validation -------------------------- */
 	for (int st = 0; st < 2; st++) {
@@ -695,7 +742,7 @@ VkResult vkv_create_pipeline(struct VkDevice_T *dev, const VkGraphicsPipelineCre
 	}
 	if (rs && rs->depthClampEnable) VKV_UNSUPPORTED("depth clamp");
 	if (rs && rs->rasterizerDiscardEnable) VKV_UNSUPPORTED("rasterizer discard");
-	if (rs && rs->lineWidth != 1.0f) VKV_UNSUPPORTED("line widths other than 1.0");
+	p->lineWidth = rs ? rs->lineWidth : 1.0f;
 	p->depthBiasEnable = rs && rs->depthBiasEnable;
 	if (p->depthBiasEnable) {
 		p->depthBiasFactor = (int)rs->depthBiasSlopeFactor;
@@ -736,7 +783,7 @@ VkResult vkv_create_pipeline(struct VkDevice_T *dev, const VkGraphicsPipelineCre
 			case VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK: p->dynamicMask |= VKV_DYN_STENCIL_CMP; break;
 			case VK_DYNAMIC_STATE_STENCIL_WRITE_MASK:   p->dynamicMask |= VKV_DYN_STENCIL_WR; break;
 			case VK_DYNAMIC_STATE_STENCIL_REFERENCE:    p->dynamicMask |= VKV_DYN_STENCIL_REF; break;
-			case VK_DYNAMIC_STATE_LINE_WIDTH:
+			case VK_DYNAMIC_STATE_LINE_WIDTH:           p->dynamicMask |= VKV_DYN_LINE_WIDTH; break;
 			case VK_DYNAMIC_STATE_BLEND_CONSTANTS:
 			case VK_DYNAMIC_STATE_DEPTH_BOUNDS:
 				break;
