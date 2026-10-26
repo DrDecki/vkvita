@@ -1,0 +1,3 @@
+Khronos Vulkan-Headers (C headers only), VK_HEADER_VERSION 366
+Upstream: https://github.com/KhronosGroup/Vulkan-Headers commit 73814d006638aa00bd553215b054f0f02e457e22
+License: Apache-2.0 OR MIT (see LICENSE.md and LICENSES/)
