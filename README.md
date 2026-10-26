@@ -1,73 +1,99 @@
 # VkVita
 
-VkVita lets you write Vulkan style code for the PS Vita. You call the normal
-`vk*` functions from `<vulkan/vulkan.h>` and VkVita turns them into GXM calls,
-so everything actually renders on the Vita's GPU.
+VkVita is a wrapper between Vulkan and sceGxm. It lets you use a large part of the Vulkan 1.0 API on the PS Vita, with everything rendered on the SGX543MP4+ GPU. It is a static library (`libvkvita.a`) that implements the `vk*` functions directly, so there is no loader and no ICD.
 
-It's a static library (`libvkvita.a`) you link into your homebrew. No loader,
-no ICD, the functions are just implemented directly.
+There are no releases. Whatever is on `main` is the current build.
 
-## Current state
+## Prerequisites
 
-There are no releases or version numbers. Whatever is on `main` is the
-current build, so think of it as a nightly.
+To compile Cg shaders at runtime, VkVita needs vitaShaRK and a decrypted `libshacccg.suprx` in `ur0:data/` on your console. You can install it with ShaRKBR33D or the PIB configuration tool. Most vitaGL ports need the same file, so you probably have it already.
 
-All samples run on a real PS Vita at a steady 60 FPS. Expect bugs anyway,
-most of the Vulkan surface hasn't been hit by a real game yet. That's also
-why there are so many debug options built in.
+If you build with `VKV_WITH_SHARK=OFF`, you can ship precompiled GXP shaders instead and don't need the file at all.
 
-If you try it on your console, I'd love to hear how it went, good or bad.
+SPIR-V shaders are not supported yet. Shaders have to be passed as Cg source or GXP binaries, see [docs/SHADERS.md](docs/SHADERS.md).
 
-## What works
+## Help and Troubleshooting
 
-- A good chunk of Vulkan 1.0: instance, device, swapchain, memory, buffers,
-  images, samplers, render passes, pipelines, descriptor sets, push
-  constants, command buffers, fences and semaphores. The full list is in
-  [docs/COVERAGE.md](docs/COVERAGE.md).
-- Shaders as Cg source (compiled at runtime with vitaShaRK) or as
-  precompiled GXP. SPIR-V does not work, the Vita simply can't use it.
-- Debug options you can switch on without rebuilding: logging, validation,
-  profiling, call tracing, shader dumps and more.
-- Compatibility options for code written for desktop GPUs, like OpenGL clip
-  space or turning culling off.
-- A small fixed function layer (`vkvita_ff.h`) for old GL 1.x style code.
+If you run into a problem, open an issue on GitHub. Most problems can be narrowed down with the debug options below, and [docs/DEBUGGING.md](docs/DEBUGGING.md) has a list of common symptoms and what to try.
 
-What doesn't work: compute, mipmaps, MSAA, more than one color attachment or
-subpass. The Vita just isn't built for most of that.
+## Build Instructions
 
-## Building
-
-You need [VitaSDK](https://vitasdk.org) and CMake 3.16 or newer. Both the
-normal (hardfp) and the softfp VitaSDK work.
+Both the normal (hardfp) and the softfp VitaSDK work.
 
 ```sh
-export VITASDK=/usr/local/vitasdk
-export PATH=$VITASDK/bin:$PATH
-
 cmake -S . -B build
 cmake --build build -j
 cmake --install build
 ```
 
-This installs the library, the headers and a CMake package straight into
-your VitaSDK. The sample VPKs end up in `build/samples/`.
+This installs `libvkvita.a`, the headers (including the Khronos `vulkan/*.h`), a CMake package and a `vkvita.pc` file into your VitaSDK. The sample VPKs end up in `build/samples/`.
 
-For runtime Cg compiling you also want vitaShaRK:
+These CMake options are available:
 
-```sh
-vdpm install vitaShaRK SceShaccCgExt
+| Option | Description |
+|---|---|
+| `VKV_WITH_SHARK=AUTO` | Runtime Cg compiler through vitaShaRK. `AUTO` uses it if it's installed, `ON` requires it, `OFF` removes it |
+| `VKV_ENABLE_DEBUG=ON` | Compiles in logging, validation and profiling. `OFF` removes them for release builds |
+| `VKV_BUILD_SAMPLES=ON` | Builds the sample VPKs |
+| `VKV_INSTALL_VULKAN_HEADERS=ON` | Installs the bundled Khronos Vulkan headers |
+| `VKV_DEFAULT_DEBUG_FLAGS=` | Default debug flags as a number |
+
+Everything below can be changed at runtime without rebuilding, either in code (`vkvSetConfig`, `vkvSetDebugFlags`, `vkvSetCompatFlags`) or by creating `ux0:data/vkvita/config.txt` on the console:
+
+```ini
+debug    = info, validation, profile
+compat   = shader_cache
+log_path = ux0:data/vkvita/log.txt
 ```
 
-and `ur0:data/libshacccg.suprx` on your Vita. If you've ever installed a
-vitaGL port you probably already have it.
+The config file also works with an already finished VPK.
 
-For a release build without debug stuff:
+### Debug Flags
 
-```sh
-cmake -S . -B build-rel -DVKV_ENABLE_DEBUG=OFF -DVKV_BUILD_SAMPLES=OFF
-```
+| Flag | Description |
+|---|---|
+| `info` | Logs init, teardown, memory fallbacks and swapchain setup |
+| `shaders` | Logs shader parameters, compile times, compiler output and how vertex inputs and push constants are mapped |
+| `validation` | Extra error checks. Failing calls return an error instead of crashing |
+| `profile` | Per-frame counters, reported every `profile_interval` frames |
+| `calls` | Logs every API call and every replayed command. Slow, but shows where a crash happens |
+| `gpu_sync` | Waits for the GPU after every submit and logs CPU and GPU time |
+| `dump_shaders` | Writes every runtime compiled shader to `shader_dir` |
+| `unsupported` | Reports every unsupported feature once. On by default |
+| `break_on_error` | Crashes on the first validation error, so the crash dump points at the bad call |
+| `all` | Everything except `calls`, `gpu_sync` and `break_on_error` |
 
-## Using it in your project
+### Compatibility Flags
+
+| Flag | Description |
+|---|---|
+| `gl_clip_space` | For code written for OpenGL (Y up, depth from -1 to 1). Flips the viewport and remaps depth |
+| `invert_cull` | Swaps front and back face culling |
+| `disable_cull` | Turns culling off completely |
+| `cpu_clear` | Clears with the CPU instead of the GXM transfer unit. Slower |
+| `shader_cache` | Loads compiled shaders from `shader_dir` before compiling, and saves them after |
+| `force_vsync` | Every present waits for vblank |
+| `no_vsync` | No present waits for vblank. Can tear |
+| `ignore_scissor` | Ignores scissor rectangles |
+| `fast_transfers` | Skips the GPU wait before copies. Faster, but can cause corruption |
+
+### Misc Flags
+
+| Key | Description |
+|---|---|
+| `log_path` | File the log is written to |
+| `shader_dir` | Folder for dumped and cached shaders |
+| `shark_module` | Path to `libshacccg.suprx` |
+| `profile_interval=120` | Frames between profile reports |
+| `parameter_buffer_kb=16384` | Size of the GXM parameter buffer |
+| `display_queue_depth=2` | Maximum number of pending flips |
+| `pool_block_kb=4096` | Block size of the memory sub-allocator |
+| `pool_max_alloc_kb=512` | Allocations up to this size are sub-allocated |
+| `scenes_per_frame=4` | Render target hint for GXM |
+| `ff_buffer_kb=1024` | Streaming buffer size of the fixed function layer per frame |
+| `ff_frames=3` | Frames in flight for the fixed function layer |
+
+## Using VkVita
 
 With CMake:
 
@@ -76,80 +102,27 @@ find_package(VkVita REQUIRED)
 target_link_libraries(my_game PRIVATE VkVita::vkvita)
 ```
 
-With a Makefile, take a look at `samples/standalone_template/Makefile`, it
-uses pkg-config.
+With a Makefile, use pkg-config like `samples/standalone_template/Makefile` does.
 
-Most Vulkan code should port without big changes. The things that are
-different on the Vita:
+Most Vulkan code works unchanged. The parts that are different on the Vita:
 
-1. **Surface:** use `VK_EXT_headless_surface` or `vkvCreateDisplaySurface()`.
-   The screen is 960x544.
-2. **Shaders:** give it Cg source or GXP instead of SPIR-V. More about that
-   in [docs/SHADERS.md](docs/SHADERS.md).
-3. **Limits:** one color attachment, one subpass, no compute.
+- **Surface:** use `VK_EXT_headless_surface` or `vkvCreateDisplaySurface()`. The swapchain is always 960x544.
+- **Shaders:** Cg source or GXP instead of SPIR-V.
+- **Limits:** one color attachment, one subpass, no compute, no mipmaps, no MSAA. The full list is in [docs/COVERAGE.md](docs/COVERAGE.md).
 
-A tiny example:
-
-```c
-#include <vulkan/vulkan.h>
-#include <vkvita/vkvita.h>
-
-VkvConfig cfg;
-vkvGetDefaultConfig(&cfg);
-cfg.debugFlags |= VKV_DEBUG_VALIDATION | VKV_DEBUG_PROFILE;
-cfg.logPath = "ux0:data/vkvita/mygame.log";
-vkvSetConfig(&cfg);
-
-/* normal Vulkan from here on */
-VkShaderModule vs;
-vkvCreateShaderModuleFromCg(device, my_vertex_cg, "main_vs", &vs);
-```
+There is also a small fixed function layer (`vkvita_ff.h`) for old GL 1.x style code, see [docs/FIXED_FUNCTION.md](docs/FIXED_FUNCTION.md).
 
 ## Samples
 
-| Sample | Title ID | What it shows |
-|---|---|---|
-| `hello_triangle` | VKVT00001 | The classic triangle, plain Vulkan, no helpers |
-| `textured_cube` | VKVT00002 | Textures, depth, push constants, debug toggles on buttons |
-| `fixed_function` | VKVT00003 | Old GL 1.x style drawing through the fixed function layer |
-| `standalone_template` | MYGAME001 | A starting point for your own project |
+Samples can be found in the `samples` folder.
 
-Install them with VitaShell. Logs land in `ux0:data/vkvita/`.
-
-In `textured_cube` the stick rotates the cube, SELECT writes the profiler
-log, TRIANGLE toggles validation, CROSS toggles wireframe and START quits.
-
-## Debugging on the Vita
-
-You can change options without rebuilding by creating
-`ux0:data/vkvita/config.txt`:
-
-```ini
-debug  = info, validation, profile, shaders
-compat = shader_cache
-log_path = ux0:data/vkvita/log.txt
-```
-
-This even works with an already finished VPK. All the options are explained
-in [docs/DEBUGGING.md](docs/DEBUGGING.md), together with a checklist for
-the first run on real hardware.
-
-## Tests
-
-There's a host test that builds everything for your PC against a fake Vita
-API and runs every sample for a few frames:
-
-```sh
-VITA_HEADERS=$VITASDK/arm-vita-eabi/include ./tests/host/run_host_tests.sh
-```
-
-It catches crashes and memory bugs, but it can't tell you if the picture
-looks right. For that you need a real Vita or Vita3K.
+| Sample | Shows |
+|---|---|
+| `hello_triangle` | The complete Vulkan flow with no helpers |
+| `textured_cube` | Textures, depth, instancing, push constants and debug toggles on buttons |
+| `fixed_function` | GL 1.x style drawing through the fixed function layer |
+| `standalone_template` | A starting point for your own project |
 
 ## License
 
-VkVita is licensed under the GPL 3.0 (or any later version), see `LICENSE`.
-If you use it in your own project, that project has to be GPL 3.0 compatible too.
-
-The bundled Vulkan headers are Apache 2.0 or MIT, and vitaShaRK is LGPL 3.0.
-Both work fine together with the GPL.
+VkVita is licensed under the GPL 3.0 (or any later version), see `LICENSE`. The bundled Vulkan headers are Apache 2.0 or MIT, and vitaShaRK is LGPL 3.0.
