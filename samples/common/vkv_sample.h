@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 #ifndef VKV_SAMPLE_H
 #define VKV_SAMPLE_H
 

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "vkv_internal.h"
 
 void vkv_load_default_config_file(void);

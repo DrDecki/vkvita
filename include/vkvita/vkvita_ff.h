@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 #ifndef VKVITA_FF_H
 #define VKVITA_FF_H
 
