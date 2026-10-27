@@ -239,10 +239,13 @@ struct VkDevice_T {
 
 	VkvPool               pool;
 
-	/* notifications for fences */
+	/* GPU progress: every scene writes its serial number when it is done.
+	 * Fences and queries remember a serial and compare against it. */
 	volatile unsigned int *notifRegion;
 	uint8_t               notifUsed[VKV_NOTIF_SLOTS];
-	uint32_t              notifCounter;
+	int32_t               progressSlot;
+	SceGxmNotification    progress;
+	uint32_t              sceneSerial;    /* serial of the last scene that was ended */
 
 	/* 0..N index buffers for non-indexed draws */
 	VkvGpuBlock           linearIdx16;
@@ -272,6 +275,7 @@ typedef struct VkQueryPool_T {
 	uint32_t    visBase;     /* occlusion: first visibility index */
 	uint64_t   *values;      /* timestamps */
 	uint8_t    *written;
+	uint32_t   *serial;      /* occlusion: scene that ended the query */
 } VkvQueryPool;
 
 typedef struct VkEvent_T {
@@ -283,7 +287,7 @@ typedef struct VkEvent_T {
 
 bool vkv_vis_init(struct VkDevice_T *dev);
 void vkv_query_begin(struct VkDevice_T *dev, SceGxmContext *ctx, VkvQueryPool *p, uint32_t q);
-void vkv_query_end(SceGxmContext *ctx);
+void vkv_query_end(struct VkDevice_T *dev, SceGxmContext *ctx, VkvQueryPool *p, uint32_t q);
 void vkv_query_reset(struct VkDevice_T *dev, VkvQueryPool *p, uint32_t first, uint32_t count);
 
 /* ------------------------------------------------------------------------ */
@@ -720,10 +724,9 @@ void *vkv_cmd_alloc(struct VkCommandBuffer_T *cb, VkvCmdType type, uint32_t size
 typedef struct VkFence_T {
 	VkvObject               obj;
 	struct VkDevice_T      *device;
-	int32_t                 slot;
-	SceGxmNotification      notif;
+	uint32_t                serial;    /* scene whose completion signals the fence */
 	bool                    signaled;  /* CPU-side signal */
-	bool                    pending;   /* waiting on GPU notification */
+	bool                    pending;   /* waiting on GPU progress */
 } VkvFence;
 
 typedef struct VkSemaphore_T {
@@ -748,6 +751,7 @@ typedef struct VkSwapchainKHR_T {
 VkResult vkv_queue_execute(struct VkDevice_T *dev, uint32_t cbCount, const VkCommandBuffer *cbs,
                            VkvFence *fence);
 void     vkv_device_wait_gpu(struct VkDevice_T *dev);
+bool     vkv_serial_done(const struct VkDevice_T *dev, uint32_t serial);
 int32_t  vkv_notif_alloc(struct VkDevice_T *dev);
 void     vkv_notif_free(struct VkDevice_T *dev, int32_t slot);
 

@@ -381,6 +381,11 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice pd, const VkDevic
 	}
 
 	d->notifRegion = sceGxmGetNotificationRegion();
+	d->progressSlot = vkv_notif_alloc(d);
+	d->progress.address = &d->notifRegion[d->progressSlot];
+	d->progress.value = 0;
+	*d->progress.address = 0;
+	d->sceneSerial = 0;
 	vkv_vis_init(d);
 
 	/* 0..65535 index list for vkCmdDraw */
@@ -394,6 +399,10 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice pd, const VkDevic
 	         (unsigned)(g_vkv.cfg.parameterBufferSize / 1024), (unsigned)g_vkv.cfg.displayQueueDepth);
 	*pDevice = d;
 	return VK_SUCCESS;
+}
+
+bool vkv_serial_done(const struct VkDevice_T *dev, uint32_t serial) {
+	return (int32_t)(*dev->progress.address - serial) >= 0;
 }
 
 void vkv_device_wait_gpu(struct VkDevice_T *dev) {
@@ -626,10 +635,6 @@ void vkv_image_setup_layout(VkvImage *img) {
 		if (img->width != img->height || !pot) {
 			VKV_UNSUPPORTED("cube maps that are not square power-of-two sizes");
 		}
-		if (img->levels > 1) {
-			VKV_UNSUPPORTED("mipmapped cube maps (only level 0 is stored)");
-			img->levels = 1;
-		}
 		img->swizzled = true;
 	}
 	if (fi->block) {
@@ -637,26 +642,48 @@ void vkv_image_setup_layout(VkvImage *img) {
 		img->swizzled = true;
 	}
 
-	uint32_t total = 0;
-	for (uint32_t l = 0; l < img->levels; l++) {
-		uint32_t w = vkv_image_level_width(img, l), h = vkv_image_level_height(img, l), size;
+	/* Level sizes follow GXM: levels are packed back to back, linear rows use an
+	 * 8 texel stride, swizzled levels have no padding and compressed levels take
+	 * whole 4x4 blocks. */
+	uint32_t chainLevels = img->cube && img->levels > 1 ? maxLevels : img->levels;
+	uint32_t total = 0, used = 0;
+	for (uint32_t l = 0; l < chainLevels; l++) {
+		uint32_t w = vkv_image_level_width(img, l), h = vkv_image_level_height(img, l), size, pitch;
 		if (fi->block) {
 			uint32_t bw = (w + 3) / 4, bh = (h + 3) / 4;
-			img->levelPitch[l] = bw * fi->bpp;
+			pitch = bw * fi->bpp;
 			size = bw * bh * fi->bpp;
 		} else if (img->swizzled) {
-			img->levelPitch[l] = w * fi->bpp;
-			size = VKV_ALIGN(w, 8) * h * fi->bpp;
+			pitch = w * fi->bpp;
+			size = w * h * fi->bpp;
 		} else {
 			/* GXM linear textures and color surfaces use an 8 texel aligned stride */
 			uint32_t stride = img->swapchain ? VKV_ALIGN(w, 64) : VKV_ALIGN(w, 8);
-			img->levelPitch[l] = stride * fi->bpp;
-			size = img->levelPitch[l] * h;
+			pitch = stride * fi->bpp;
+			size = pitch * h;
 		}
-		img->levelOffset[l] = total;
-		total += VKV_ALIGN(size, 16);
+		if (l < img->levels) {
+			img->levelPitch[l] = pitch;
+			img->levelOffset[l] = total;
+			used = total + size;
+		}
+		total += size;
 	}
-	img->layerSize = VKV_ALIGN(total, 16);
+	if (img->cube) {
+		/* A cube with a mip chain gives every face room for the full chain down to
+		 * 1x1, and large faces start on 2048 byte boundaries. Without a chain the
+		 * faces follow each other directly. */
+		uint32_t faceAlign = 4;
+		if (img->levels > 1) {
+			uint32_t bits = fi->block ? 0 : fi->bpp * 8, w = img->width, h = img->height;
+			if ((w >= 32 && h >= 32 && (fi->block || bits <= 8)) || (w >= 16 && h >= 16 && (bits == 16 || bits == 32)) ||
+			    (w >= 8 && h >= 8 && bits == 64))
+				faceAlign = 2048;
+		}
+		img->layerSize = VKV_ALIGN(total, faceAlign);
+	} else {
+		img->layerSize = VKV_ALIGN(used, 16);
+	}
 	img->alignedW = fi->block ? img->width : img->levelPitch[0] / fi->bpp;
 	img->alignedH = img->height;
 	img->rowPitch = img->levelPitch[0];
@@ -781,8 +808,13 @@ bool vkv_view_build_texture(VkvImageView *v) {
 	void *data = vkv_image_level_ptr(img, v->baseLevel, v->cube ? 0 : v->baseLayer);
 	int r;
 	/* mipCount 0 tells GXM the cube has no mip chain, so the faces follow each other
-	 * directly; any other count makes every face span a full chain */
-	if (v->cube) r = sceGxmTextureInitCube(&v->tex, data, fi->tex, w, h, 0);
+	 * directly; any other count makes every face span a full chain, which is how
+	 * mipmapped cubes are stored */
+	if (v->cube && img->levels > 1 && v->baseLevel) {
+		VKV_UNSUPPORTED("cube views that skip the first mip levels of a mipmapped cube");
+		return false;
+	}
+	if (v->cube) r = sceGxmTextureInitCube(&v->tex, data, fi->tex, w, h, img->levels > 1 ? v->levelCount : 0);
 	else if (img->swizzled) r = sceGxmTextureInitSwizzled(&v->tex, data, fi->tex, w, h, v->levelCount);
 	else r = sceGxmTextureInitLinear(&v->tex, data, fi->tex, w, h, v->levelCount);
 	if (r < 0) {
@@ -902,15 +934,6 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateFence(VkDevice device, const VkFenceCreat
 	if (!f) return VK_ERROR_OUT_OF_HOST_MEMORY;
 	f->obj.magic = VKV_MAGIC_FENCE;
 	f->device = device;
-	f->slot = vkv_notif_alloc(device);
-	if (f->slot < 0) {
-		VKV_ERROR("out of GXM notification slots (%d fences max)", VKV_NOTIF_SLOTS);
-		free(f);
-		return VK_ERROR_TOO_MANY_OBJECTS;
-	}
-	f->notif.address = &device->notifRegion[f->slot];
-	f->notif.value = 0;
-	*f->notif.address = 0;
 	f->signaled = (ci->flags & VK_FENCE_CREATE_SIGNALED_BIT) != 0;
 	*pFence = VKV_H(VkFence, f);
 	return VK_SUCCESS;
@@ -920,14 +943,14 @@ VKAPI_ATTR void VKAPI_CALL vkDestroyFence(VkDevice device, VkFence fence, const 
 	(void)alloc;
 	VkvFence *f = VKV_ND(VkvFence, fence);
 	if (!f) return;
-	vkv_notif_free(device, f->slot);
+	(void)device;
 	f->obj.magic = VKV_MAGIC_DEAD;
 	free(f);
 }
 
 static bool vkv_fence_poll(VkvFence *f) {
 	if (f->signaled) return true;
-	if (f->pending && (int32_t)(*f->notif.address - f->notif.value) >= 0) {
+	if (f->pending && vkv_serial_done(f->device, f->serial)) {
 		f->pending = false;
 		f->signaled = true;
 		return true;

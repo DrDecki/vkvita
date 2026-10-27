@@ -41,6 +41,8 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateQueryPool(VkDevice device, const VkQueryP
 		p->values = calloc(ci->queryCount ? ci->queryCount : 1, sizeof(uint64_t));
 		if (!p->values) { free(p->written); free(p); return VK_ERROR_OUT_OF_HOST_MEMORY; }
 	} else {
+		p->serial = calloc(ci->queryCount ? ci->queryCount : 1, sizeof(uint32_t));
+		if (!p->serial) { free(p->written); free(p); return VK_ERROR_OUT_OF_HOST_MEMORY; }
 		/* a contiguous run of free visibility slots */
 		uint32_t run = 0, base = 0;
 		bool found = false;
@@ -52,6 +54,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateQueryPool(VkDevice device, const VkQueryP
 		if (!found || !device->visBufSet) {
 			VKV_ERROR("vkCreateQueryPool: no room for %u occlusion queries (%d in total)", (unsigned)p->count,
 			          VKV_VIS_SLOTS);
+			free(p->serial);
 			free(p->written);
 			free(p);
 			return VK_ERROR_OUT_OF_DEVICE_MEMORY;
@@ -69,21 +72,31 @@ VKAPI_ATTR void VKAPI_CALL vkDestroyQueryPool(VkDevice device, VkQueryPool pool,
 	if (!p) return;
 	if (p->type == VK_QUERY_TYPE_OCCLUSION) memset(device->visUsed + p->visBase, 0, p->count);
 	free(p->values);
+	free(p->serial);
 	free(p->written);
 	p->obj.magic = VKV_MAGIC_DEAD;
 	free(p);
 }
 
+/* True when no submitted scene can still write the counters of these queries. */
+static bool vkv_queries_done(const struct VkDevice_T *dev, const VkvQueryPool *p, uint32_t first, uint32_t count) {
+	for (uint32_t i = first; i < first + count; i++)
+		if (p->written[i] && !vkv_serial_done(dev, p->serial[i])) return false;
+	return true;
+}
+
 void vkv_query_reset(struct VkDevice_T *dev, VkvQueryPool *p, uint32_t first, uint32_t count) {
+	if (p->type == VK_QUERY_TYPE_OCCLUSION && dev->gpuBusy && !vkv_queries_done(dev, p, first, count))
+		vkv_device_wait_gpu(dev);
 	memset(p->written + first, 0, count);
 	if (p->type != VK_QUERY_TYPE_OCCLUSION) return;
-	if (dev->gpuBusy) vkv_device_wait_gpu(dev);
 	for (uint32_t c = 0; c < VKV_GPU_CORES; c++)
 		memset((uint8_t *)dev->visBuf.base + c * VKV_VIS_STRIDE + (p->visBase + first) * 4, 0, count * 4);
 }
 
 void vkv_query_begin(struct VkDevice_T *dev, SceGxmContext *ctx, VkvQueryPool *p, uint32_t q) {
 	p->written[q] = 1;
+	if (p->serial) p->serial[q] = dev->sceneSerial + 1; /* the scene being recorded right now */
 	if (p->type != VK_QUERY_TYPE_OCCLUSION || !dev->visBufSet) return;
 	sceGxmSetFrontVisibilityTestIndex(ctx, p->visBase + q);
 	sceGxmSetBackVisibilityTestIndex(ctx, p->visBase + q);
@@ -93,7 +106,8 @@ void vkv_query_begin(struct VkDevice_T *dev, SceGxmContext *ctx, VkvQueryPool *p
 	sceGxmSetBackVisibilityTestEnable(ctx, SCE_GXM_VISIBILITY_TEST_ENABLED);
 }
 
-void vkv_query_end(SceGxmContext *ctx) {
+void vkv_query_end(struct VkDevice_T *dev, SceGxmContext *ctx, VkvQueryPool *p, uint32_t q) {
+	if (p->serial && q < p->count) p->serial[q] = dev->sceneSerial + 1;
 	sceGxmSetFrontVisibilityTestEnable(ctx, SCE_GXM_VISIBILITY_TEST_DISABLED);
 	sceGxmSetBackVisibilityTestEnable(ctx, SCE_GXM_VISIBILITY_TEST_DISABLED);
 }
@@ -103,8 +117,11 @@ VKAPI_ATTR VkResult VKAPI_CALL vkGetQueryPoolResults(VkDevice device, VkQueryPoo
 	VkvQueryPool *p = VKV_ND(VkvQueryPool, pool);
 	if (VKV_CHECK(VKV_OBJ_OK(p, VKV_MAGIC_QPOOL) && first + count <= p->count, "invalid query pool or range"))
 		return VK_ERROR_UNKNOWN;
-	/* results are only known once the GPU is done with every submitted scene */
-	if (p->type == VK_QUERY_TYPE_OCCLUSION && device->gpuBusy) vkv_device_wait_gpu(device);
+	/* occlusion results are ready once the scene that ended the query is done;
+	 * only VK_QUERY_RESULT_WAIT_BIT blocks for that */
+	if (p->type == VK_QUERY_TYPE_OCCLUSION && (flags & VK_QUERY_RESULT_WAIT_BIT) && device->gpuBusy &&
+	    !vkv_queries_done(device, p, first, count))
+		vkv_device_wait_gpu(device);
 	bool is64 = (flags & VK_QUERY_RESULT_64_BIT) != 0;
 	VkResult res = VK_SUCCESS;
 	for (uint32_t i = 0; i < count; i++) {
@@ -118,6 +135,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkGetQueryPoolResults(VkDevice device, VkQueryPoo
 		} else {
 			for (uint32_t c = 0; c < VKV_GPU_CORES; c++)
 				v += ((const uint32_t *)((const uint8_t *)device->visBuf.base + c * VKV_VIS_STRIDE))[p->visBase + q];
+			avail = avail && vkv_serial_done(device, p->serial[q]);
 			if (flags & VK_QUERY_RESULT_PARTIAL_BIT) avail = true;
 		}
 		if (!avail) res = VK_NOT_READY;

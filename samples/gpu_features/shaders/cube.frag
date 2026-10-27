@@ -8,5 +8,7 @@ layout(location = 1) in vec3 vDir;
 layout(location = 0) out vec4 outColor;
 
 void main() {
-    outColor = texture(env, normalize(vDir));
+    /* four bands per face reading levels 0, 2, 4 and 6 */
+    float lod = floor(clamp(vUV.x, 0.0, 0.999) * 4.0) * 2.0;
+    outColor = textureLod(env, normalize(vDir), lod);
 }

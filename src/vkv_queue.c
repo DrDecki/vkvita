@@ -214,12 +214,12 @@ static void vkv_begin_scene(VkvReplay *R, bool loadDepth, bool clearDepth, float
 
 static void vkv_end_scene(VkvReplay *R, bool final) {
 	if (!R->inScene) return;
-	const SceGxmNotification *notif = NULL;
+	R->dev->progress.value = ++R->dev->sceneSerial;
 	if (final && R->fence && R->scenesLeft == 1) {
-		notif = &R->fence->notif;
+		R->fence->serial = R->dev->sceneSerial;
 		R->fenceAttached = true;
 	}
-	int r = sceGxmEndScene(R->ctx, NULL, notif);
+	int r = sceGxmEndScene(R->ctx, NULL, &R->dev->progress);
 	if (r < 0) VKV_ERROR("sceGxmEndScene failed 0x%08X", (unsigned)r);
 	R->inScene = false;
 	R->dev->gpuBusy = true;
@@ -1038,9 +1038,11 @@ static void vkv_replay(VkvReplay *R, struct VkCommandBuffer_T *cb) {
 			if (R->inScene) vkv_query_begin(R->dev, R->ctx, c->pool, c->first);
 			break;
 		}
-		case VKV_CMD_QUERY_END:
-			if (R->inScene) vkv_query_end(R->ctx);
+		case VKV_CMD_QUERY_END: {
+			const VkvCmdQuery *c = (const VkvCmdQuery *)h;
+			if (R->inScene) vkv_query_end(R->dev, R->ctx, c->pool, c->first);
 			break;
+		}
 		case VKV_CMD_QUERY_RESET: {
 			const VkvCmdQuery *c = (const VkvCmdQuery *)h;
 			vkv_query_reset(R->dev, c->pool, c->first, c->count);
@@ -1074,7 +1076,6 @@ VkResult vkv_queue_execute(struct VkDevice_T *dev, uint32_t cbCount, const VkCom
 	R.fence = fence;
 	for (uint32_t i = 0; i < cbCount; i++) R.scenesLeft += cbs[i]->sceneCount;
 	if (fence) {
-		fence->notif.value = ++dev->notifCounter;
 		fence->signaled = false;
 		fence->pending = R.scenesLeft > 0;
 		if (!fence->pending) fence->signaled = true;

@@ -7,9 +7,12 @@
  *                 yellow, green, ... further away.
  *   top right     the same floor with mipmaps made by vkCmdBlitImage from a
  *                 black and white checker. Far away it turns smooth gray.
- *   bottom left   a cube map on a spinning cube: +X red, -X cyan, +Y green,
- *                 -Y magenta, +Z blue, -Z yellow, each face with a white
- *                 square in its first texel corner.
+ *   bottom left   a mipmapped cube map on a spinning cube: +X red, -X cyan,
+ *                 +Y green, -Y magenta, +Z blue, -Z yellow, each face with a
+ *                 white square in its first texel corner. The shader reads
+ *                 levels 0, 2, 4 and 6 in four bands, every level is a bit
+ *                 darker, so each face shows its own color getting darker
+ *                 from one side to the other.
  *   bottom right  a BC1 (DXT1) texture through a separate image and sampler:
  *                 a smooth 16x16 grid of color blocks with a white block in
  *                 the top left corner.
@@ -45,7 +48,8 @@ typedef struct { float pos[3]; float uv[2]; } Vertex;
 
 #define MIP_SIZE   256
 #define MIP_LEVELS 9
-#define CUBE_SIZE  64
+#define CUBE_SIZE  256
+#define CUBE_LEVELS 9
 #define BC_SIZE    64
 
 static const uint32_t k_levelColors[MIP_LEVELS] = {
@@ -196,7 +200,13 @@ int main(void) {
 		mipBytes += (VkDeviceSize)d * d * 4;
 	}
 	VkDeviceSize checkerOff = mipBytes, cubeOff = checkerOff + MIP_SIZE * MIP_SIZE * 4;
-	VkDeviceSize bcOff = cubeOff + 6 * CUBE_SIZE * CUBE_SIZE * 4;
+	VkDeviceSize cubeLevelOff[CUBE_LEVELS], cubeBytes = 0;
+	for (int l = 0; l < CUBE_LEVELS; l++) {
+		uint32_t d = CUBE_SIZE >> l;
+		cubeLevelOff[l] = cubeOff + cubeBytes;
+		cubeBytes += (VkDeviceSize)6 * d * d * 4;
+	}
+	VkDeviceSize bcOff = cubeOff + cubeBytes;
 	VkDeviceSize stagingSize = bcOff + (BC_SIZE / 4) * (BC_SIZE / 4) * 8;
 	VkBuffer staging;
 	VkDeviceMemory stagingMem;
@@ -213,11 +223,16 @@ int main(void) {
 	for (uint32_t y = 0; y < MIP_SIZE; y++)
 		for (uint32_t x = 0; x < MIP_SIZE; x++)
 			checker[y * MIP_SIZE + x] = (((x / 4) ^ (y / 4)) & 1) ? 0xFFFFFFFFu : 0xFF000000u;
-	for (int f = 0; f < 6; f++) {
-		uint32_t *px = (uint32_t *)(st + cubeOff) + f * CUBE_SIZE * CUBE_SIZE;
-		for (uint32_t y = 0; y < CUBE_SIZE; y++)
-			for (uint32_t x = 0; x < CUBE_SIZE; x++)
-				px[y * CUBE_SIZE + x] = (x < 16 && y < 16) ? 0xFFFFFFFFu : k_faceColors[f];
+	for (int l = 0; l < CUBE_LEVELS; l++) {
+		uint32_t d = CUBE_SIZE >> l, k = 256 - (uint32_t)l * 28; /* every level a bit darker */
+		for (int f = 0; f < 6; f++) {
+			uint32_t c = k_faceColors[f], *px = (uint32_t *)(st + cubeLevelOff[l]) + f * d * d;
+			uint32_t dark = 0xFF000000u | ((((c >> 16) & 0xFF) * k >> 8) << 16) | ((((c >> 8) & 0xFF) * k >> 8) << 8) |
+			                ((c & 0xFF) * k >> 8);
+			for (uint32_t y = 0; y < d; y++)
+				for (uint32_t x = 0; x < d; x++)
+					px[y * d + x] = (x < d / 4 && y < d / 4) ? 0xFFFFFFFFu : dark;
+		}
 	}
 	uint8_t *bc = st + bcOff;
 	for (uint32_t by = 0; by < BC_SIZE / 4; by++)
@@ -233,14 +248,14 @@ int main(void) {
 	VkDeviceMemory mipMem, blitMem, cubeMem, bcMem;
 	VkImage mipImg = make_image(&s, VK_FORMAT_R8G8B8A8_UNORM, MIP_SIZE, MIP_SIZE, MIP_LEVELS, 1, 0, &mipMem);
 	VkImage blitImg = make_image(&s, VK_FORMAT_R8G8B8A8_UNORM, MIP_SIZE, MIP_SIZE, MIP_LEVELS, 1, 0, &blitMem);
-	VkImage cubeImg = make_image(&s, VK_FORMAT_R8G8B8A8_UNORM, CUBE_SIZE, CUBE_SIZE, 1, 6,
+	VkImage cubeImg = make_image(&s, VK_FORMAT_R8G8B8A8_UNORM, CUBE_SIZE, CUBE_SIZE, CUBE_LEVELS, 6,
 	                             VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT, &cubeMem);
 	VkImage bcImg = make_image(&s, VK_FORMAT_BC1_RGB_UNORM_BLOCK, BC_SIZE, BC_SIZE, 1, 1, 0, &bcMem);
 
 	VkCommandBuffer up = sample_begin_once(&s);
 	barrier(up, mipImg, 0, MIP_LEVELS, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 	barrier(up, blitImg, 0, MIP_LEVELS, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-	barrier(up, cubeImg, 0, 1, 6, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+	barrier(up, cubeImg, 0, CUBE_LEVELS, 6, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 	barrier(up, bcImg, 0, 1, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 	VkBufferImageCopy mipCopies[MIP_LEVELS];
 	memset(mipCopies, 0, sizeof(mipCopies));
@@ -255,10 +270,14 @@ int main(void) {
 	one.imageSubresource = (VkImageSubresourceLayers){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
 	one.imageExtent = (VkExtent3D){ MIP_SIZE, MIP_SIZE, 1 };
 	vkCmdCopyBufferToImage(up, staging, blitImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &one);
-	one.bufferOffset = cubeOff;
-	one.imageSubresource.layerCount = 6;
-	one.imageExtent = (VkExtent3D){ CUBE_SIZE, CUBE_SIZE, 1 };
-	vkCmdCopyBufferToImage(up, staging, cubeImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &one);
+	VkBufferImageCopy cubeCopies[CUBE_LEVELS];
+	memset(cubeCopies, 0, sizeof(cubeCopies));
+	for (int l = 0; l < CUBE_LEVELS; l++) {
+		cubeCopies[l].bufferOffset = cubeLevelOff[l];
+		cubeCopies[l].imageSubresource = (VkImageSubresourceLayers){ VK_IMAGE_ASPECT_COLOR_BIT, (uint32_t)l, 0, 6 };
+		cubeCopies[l].imageExtent = (VkExtent3D){ CUBE_SIZE >> l, CUBE_SIZE >> l, 1 };
+	}
+	vkCmdCopyBufferToImage(up, staging, cubeImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, CUBE_LEVELS, cubeCopies);
 	one.bufferOffset = bcOff;
 	one.imageSubresource.layerCount = 1;
 	one.imageExtent = (VkExtent3D){ BC_SIZE, BC_SIZE, 1 };
@@ -276,7 +295,7 @@ int main(void) {
 	}
 	barrier(up, mipImg, 0, MIP_LEVELS, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 	barrier(up, blitImg, 0, MIP_LEVELS, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-	barrier(up, cubeImg, 0, 1, 6, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	barrier(up, cubeImg, 0, CUBE_LEVELS, 6, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 	barrier(up, bcImg, 0, 1, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 	sample_end_once(&s, up);
 	vkDestroyBuffer(s.device, staging, NULL);
@@ -284,7 +303,7 @@ int main(void) {
 
 	VkImageView mipView = make_view(&s, mipImg, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_VIEW_TYPE_2D, MIP_LEVELS, 1);
 	VkImageView blitView = make_view(&s, blitImg, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_VIEW_TYPE_2D, MIP_LEVELS, 1);
-	VkImageView cubeView = make_view(&s, cubeImg, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_VIEW_TYPE_CUBE, 1, 6);
+	VkImageView cubeView = make_view(&s, cubeImg, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_VIEW_TYPE_CUBE, CUBE_LEVELS, 6);
 	VkImageView bcView = make_view(&s, bcImg, VK_FORMAT_BC1_RGB_UNORM_BLOCK, VK_IMAGE_VIEW_TYPE_2D, 1, 1);
 
 	VkSamplerCreateInfo sci = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
@@ -443,6 +462,18 @@ int main(void) {
 	qci.queryCount = 1;
 	VkQueryPool queries;
 	VK_CHECK(vkCreateQueryPool(s.device, &qci, NULL, &queries));
+	/* the reset is recorded once and submitted without waiting, so reading and
+	 * restarting the query never stalls the frame */
+	VkCommandBufferAllocateInfo cai = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+	cai.commandPool = s.cmdPool;
+	cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	cai.commandBufferCount = 1;
+	VkCommandBuffer resetCb;
+	VK_CHECK(vkAllocateCommandBuffers(s.device, &cai, &resetCb));
+	VkCommandBufferBeginInfo rbi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+	VK_CHECK(vkBeginCommandBuffer(resetCb, &rbi));
+	vkCmdResetQueryPool(resetCb, queries, 0, 1);
+	VK_CHECK(vkEndCommandBuffer(resetCb));
 
 	/* --- loop ----------------------------------------------------------- */
 	const float pw = (float)s.extent.width * 0.5f, ph = (float)s.extent.height * 0.5f;
@@ -462,8 +493,16 @@ int main(void) {
 	float t = 0.0f;
 	uint32_t frameNo = 0;
 	bool queryIssued = false;
+	SceUInt64 lastFrame = sceKernelGetProcessTimeWide(), worstFrame = 0;
 
 	while (sample_poll_input(&s)) {
+		SceUInt64 now = sceKernelGetProcessTimeWide();
+		if (frameNo && now - lastFrame > worstFrame) worstFrame = now - lastFrame;
+		lastFrame = now;
+		if (frameNo && frameNo % 300 == 0) {
+			vkvLog(VKV_LOG_WARN, "gpu_features: longest frame of the last 5 seconds %.1f ms", worstFrame / 1000.0f);
+			worstFrame = 0;
+		}
 		t += 1.0f / 60.0f;
 		uint32_t phase = frameNo / 180;
 		if (frameNo % 180 == 0 && phase <= 5) vkvLog(VKV_LOG_WARN, "gpu_features: phase %u", (unsigned)phase);
@@ -472,13 +511,15 @@ int main(void) {
 		if (runQuery) {
 			if (queryIssued) {
 				uint64_t samples = 0;
+				/* issued a second ago, so this does not have to wait */
 				if (vkGetQueryPoolResults(s.device, queries, 0, 1, sizeof(samples), &samples, sizeof(samples),
 				                          VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) == VK_SUCCESS)
 					vkvLog(VKV_LOG_WARN, "occlusion query: the cube covered %llu samples", (unsigned long long)samples);
 			}
-			VkCommandBuffer rc = sample_begin_once(&s);
-			vkCmdResetQueryPool(rc, queries, 0, 1);
-			sample_end_once(&s, rc);
+			VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+			si.commandBufferCount = 1;
+			si.pCommandBuffers = &resetCb;
+			VK_CHECK(vkQueueSubmit(s.queue, 1, &si, VK_NULL_HANDLE));
 		}
 
 		VkCommandBuffer cb = sample_begin_frame(&s);
@@ -527,6 +568,7 @@ int main(void) {
 	}
 
 	vkDeviceWaitIdle(s.device);
+	vkFreeCommandBuffers(s.device, s.cmdPool, 1, &resetCb);
 	vkDestroyQueryPool(s.device, queries, NULL);
 	vkDestroyPipeline(s.device, texPipe, NULL);
 	vkDestroyPipeline(s.device, cubePipe, NULL);
