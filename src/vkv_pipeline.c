@@ -686,10 +686,12 @@ VkResult vkv_create_pipeline(struct VkDevice_T *dev, const VkGraphicsPipelineCre
 		}
 		if (vkv_validate()) {
 			unsigned n = sceGxmProgramGetParameterCount(p->vprog), attrs = 0;
-			for (unsigned i = 0; i < n; i++)
-				if (sceGxmProgramParameterGetCategory(sceGxmProgramGetParameter(p->vprog, i)) ==
-				    SCE_GXM_PARAMETER_CATEGORY_ATTRIBUTE)
+			for (unsigned i = 0; i < n; i++) {
+				const SceGxmProgramParameter *pp = sceGxmProgramGetParameter(p->vprog, i);
+				if (sceGxmProgramParameterGetCategory(pp) == SCE_GXM_PARAMETER_CATEGORY_ATTRIBUTE &&
+				    !vkv_shader_is_system_input(pp))
 					attrs++;
+			}
 			if (attrs > covered)
 				vkv_fail(__func__, "pipeline '%s': vertex shader has %u attributes but only %u are fed", p->vname,
 				         attrs, (unsigned)covered);
@@ -782,7 +784,8 @@ VkResult vkv_create_pipeline(struct VkDevice_T *dev, const VkGraphicsPipelineCre
 	VkPrimitiveTopology topo = ci->pInputAssemblyState ? ci->pInputAssemblyState->topology
 	                                                   : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 	switch (topo) {
-	case VK_PRIMITIVE_TOPOLOGY_POINT_LIST:     p->prim = SCE_GXM_PRIMITIVE_POINTS; p->polyMode = SCE_GXM_POLYGON_MODE_POINT; break;
+	/* the UV variant generates SPRITECOORD, the plain point mode leaves it at zero */
+	case VK_PRIMITIVE_TOPOLOGY_POINT_LIST:     p->prim = SCE_GXM_PRIMITIVE_POINTS; p->polyMode = SCE_GXM_POLYGON_MODE_POINT_01UV; break;
 	case VK_PRIMITIVE_TOPOLOGY_LINE_LIST:      p->prim = SCE_GXM_PRIMITIVE_LINES;  p->polyMode = SCE_GXM_POLYGON_MODE_LINE; break;
 	case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST:  p->prim = SCE_GXM_PRIMITIVE_TRIANGLES; break;
 	case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP: p->prim = SCE_GXM_PRIMITIVE_TRIANGLE_STRIP; break;

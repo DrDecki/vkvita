@@ -61,6 +61,11 @@ void vkv_spirv_free(VkvSpirvResult *r);
  * has no subpass inputs and -1 on malformed input. */
 int vkv_spirv_lower_subpass(const uint32_t *words, size_t wordCount, uint32_t **outWords, size_t *outCount);
 
+/* Turns gl_VertexIndex, gl_InstanceIndex and gl_PointCoord into inputs named
+ * vkv_vertex_index, vkv_instance_index and vkv_point_coord. Same return
+ * values as vkv_spirv_lower_subpass. */
+int vkv_spirv_lower_builtins(const uint32_t *words, size_t wordCount, uint32_t **outWords, size_t *outCount);
+
 #ifdef __cplusplus
 }
 #endif

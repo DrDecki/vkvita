@@ -185,6 +185,11 @@ void vkv_shader_log_program(const char *name, const SceGxmProgram *p) {
 	}
 }
 
+bool vkv_shader_is_system_input(const SceGxmProgramParameter *pp) {
+	const char *n = pp ? sceGxmProgramParameterGetName(pp) : NULL;
+	return n && (!strcmp(n, "stage_input_vkv_vertex_index") || !strcmp(n, "stage_input_vkv_instance_index"));
+}
+
 const SceGxmProgramParameter *vkv_shader_find_attribute(const VkvShaderModule *m, const SceGxmProgram *p,
                                                         uint32_t location) {
 	/* 1. explicit name from VkvShaderModuleInfoVITA */
@@ -204,6 +209,7 @@ const SceGxmProgramParameter *vkv_shader_find_attribute(const VkvShaderModule *m
 	for (unsigned i = 0; i < n; i++) {
 		pp = sceGxmProgramGetParameter(p, i);
 		if (sceGxmProgramParameterGetCategory(pp) != SCE_GXM_PARAMETER_CATEGORY_ATTRIBUTE) continue;
+		if (vkv_shader_is_system_input(pp)) continue;
 		if (k++ == location) return pp;
 	}
 	return NULL;

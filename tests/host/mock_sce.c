@@ -337,6 +337,8 @@ SceGxmProgram *shark_compile_shader_extended(const char *src, uint32_t *size, sh
 						pp->res = ub;
 						ub += pp->comps * pp->arr;
 						p->count++;
+					} else if (type == SHARK_VERTEX_SHADER && (!strcmp(semantic, "INDEX") || !strcmp(semantic, "INSTANCE"))) {
+						/* filled by the GPU, like on hardware no attribute feeds it */
 					} else if (type == SHARK_VERTEX_SHADER) {
 						pp->cat = SCE_GXM_PARAMETER_CATEGORY_ATTRIBUTE;
 						pp->comps = type_comps(ty, &pp->arr);

@@ -38,6 +38,12 @@ Nothing from the sections below has to be done by hand:
 - Integer push constant and uniform buffer members are converted to float on
   upload and back to int in the shader.
 - Integer varyings (`flat out int`) are carried as floats and rounded.
+- `gl_VertexIndex` and `gl_InstanceIndex` use the `INDEX` and `INSTANCE`
+  inputs of the GXM compiler, so a vertex shader can build a full screen
+  triangle without a vertex buffer. Unlike Vulkan they do not include
+  `vertexOffset` or `firstInstance`.
+- `gl_PointSize` is written to `PSIZE` and `gl_PointCoord` reads
+  `SPRITECOORD`, so point sprites work with `VK_PRIMITIVE_TOPOLOGY_POINT_LIST`.
 - Subpass inputs (`subpassInput` / `subpassLoad`) are rewritten in the
   SPIR-V before translation: the attachment becomes a texture sampled at the
   center of the current pixel, with 1 / framebuffer size coming from a small
@@ -48,8 +54,7 @@ Nothing from the sections below has to be done by hand:
   builds the texture from both descriptors at draw time.
 
 Not supported (the translation fails with a message naming the resource):
-sampler arrays, storage buffers and images,
-`gl_VertexIndex` / `gl_InstanceIndex`, compute and geometry stages. Struct
+sampler arrays, storage buffers and images, compute and geometry stages. Struct
 members inside uniform blocks are declared but not fed yet.
 
 With `debug = shaders` the log contains the generated Cg (lines starting with

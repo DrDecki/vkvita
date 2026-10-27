@@ -8,15 +8,21 @@
  *      writes the swapchain image: the left strip turns green where every
  *      pixel came back exactly (red would mean it read a neighbor), the
  *      middle shows the scene as it is and the right side inverted
- *   2  a yellow square in the top right corner, drawn into the same swapchain
- *      attachment without inputs, so it continues the scene of subpass 1
+ *   2  four round yellow points in the top right corner, drawn into the same
+ *      swapchain attachment without inputs, so it continues the scene of
+ *      subpass 1
+ *
+ * Subpass 1 draws a full screen triangle without a vertex buffer, built from
+ * gl_VertexIndex, and subpass 2 uses gl_PointSize and gl_PointCoord, the way
+ * vkQuake2 draws its post processing pass and its particles.
  *
  * Expected picture: green strip, normal cube in the middle that turns into
- * its inverted colors on the right, yellow square top right.
+ * its inverted colors on the right, four yellow circles top right.
  *
  * Regenerate the shader headers after editing shaders/:
  *   glslangValidator -V --vn k_scene_vert_spv shaders/scene.vert -o scene_vert_spv.h
- *   (same for background.frag, color.frag and post.frag)
+ *   (same for fullscreen.vert, points.vert, background.frag, color.frag,
+ *   post.frag and points.frag)
  *
  * Controls: START quits.
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -32,10 +38,13 @@
 #include "background_frag_spv.h"
 #include "color_frag_spv.h"
 #include "post_frag_spv.h"
+#include "fullscreen_vert_spv.h"
+#include "points_vert_spv.h"
+#include "points_frag_spv.h"
 
 typedef struct { float pos[3]; float color[3]; } Vertex;
 
-/* vertices: background quad (0), cube (4), screen quad (28), yellow square (32) */
+/* vertices: background quad (0), cube (4), screen quad (28, unused), yellow points (32) */
 #define V_BG     0
 #define V_CUBE   4
 #define V_SCREEN 28
@@ -99,7 +108,13 @@ int main(void) {
 	quad(&verts[V_BG], -1.0f, -1.0f, 1.0f, 1.0f, skyTop, skyBottom);
 	build_cube(&verts[V_CUBE], indices);
 	quad(&verts[V_SCREEN], -1.0f, -1.0f, 1.0f, 1.0f, white, white);
-	quad(&verts[V_HUD], 0.72f, -0.9f, 0.9f, -0.58f, yellow, yellow);
+	for (int k = 0; k < 4; k++) {
+		Vertex *h = &verts[V_HUD + k];
+		h->pos[0] = 0.62f + 0.09f * (float)k;
+		h->pos[1] = -0.8f;
+		h->pos[2] = 0.5f;
+		memcpy(h->color, yellow, sizeof(h->color));
+	}
 	for (int q = 0; q < 3; q++) {
 		static const uint16_t bases[3] = { V_BG, V_SCREEN, V_HUD };
 		uint16_t *d = &indices[36 + q * 6], b = bases[q];
@@ -259,6 +274,9 @@ int main(void) {
 	VkShaderModule fsBg = make_module(&s, k_background_frag_spv, sizeof(k_background_frag_spv));
 	VkShaderModule fsColor = make_module(&s, k_color_frag_spv, sizeof(k_color_frag_spv));
 	VkShaderModule fsPost = make_module(&s, k_post_frag_spv, sizeof(k_post_frag_spv));
+	VkShaderModule vsFull = make_module(&s, k_fullscreen_vert_spv, sizeof(k_fullscreen_vert_spv));
+	VkShaderModule vsPoints = make_module(&s, k_points_vert_spv, sizeof(k_points_vert_spv));
+	VkShaderModule fsPoints = make_module(&s, k_points_frag_spv, sizeof(k_points_frag_spv));
 
 	VkPipelineShaderStageCreateInfo stages[2] = {
 		{ VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_VERTEX_BIT, vs, "main", NULL },
@@ -321,12 +339,23 @@ int main(void) {
 	memset(&dsi, 0, sizeof(dsi));
 	dsi.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
 	rs.cullMode = VK_CULL_MODE_NONE;
+	/* post: no vertex input at all */
+	VkPipelineVertexInputStateCreateInfo noInput = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+	gp.pVertexInputState = &noInput;
+	stages[0].module = vsFull;
 	stages[1].module = fsPost;
 	gp.subpass = 1;
 	VK_CHECK(vkCreateGraphicsPipelines(s.device, VK_NULL_HANDLE, 1, &gp, NULL, &postPipe));
-	stages[1].module = fsColor;
+	/* points */
+	gp.pVertexInputState = &vi;
+	ia.topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+	stages[0].module = vsPoints;
+	stages[1].module = fsPoints;
 	gp.subpass = 2;
 	VK_CHECK(vkCreateGraphicsPipelines(s.device, VK_NULL_HANDLE, 1, &gp, NULL, &hudPipe));
+	vkDestroyShaderModule(s.device, vsFull, NULL);
+	vkDestroyShaderModule(s.device, vsPoints, NULL);
+	vkDestroyShaderModule(s.device, fsPoints, NULL);
 	vkDestroyShaderModule(s.device, vs, NULL);
 	vkDestroyShaderModule(s.device, fsBg, NULL);
 	vkDestroyShaderModule(s.device, fsColor, NULL);
@@ -397,14 +426,12 @@ int main(void) {
 		vkCmdNextSubpass(cb, VK_SUBPASS_CONTENTS_INLINE);
 		vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, postPipe);
 		vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &set, 0, NULL);
-		vkCmdPushConstants(cb, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 64, ident);
-		vkCmdDrawIndexed(cb, 6, 1, 42, 0, 0);
+		vkCmdDraw(cb, 3, 1, 0, 0);
 
 		/* subpass 2: same attachment, no inputs */
 		vkCmdNextSubpass(cb, VK_SUBPASS_CONTENTS_INLINE);
 		vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, hudPipe);
-		vkCmdPushConstants(cb, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 64, ident);
-		vkCmdDrawIndexed(cb, 6, 1, 48, 0, 0);
+		vkCmdDraw(cb, 4, 1, V_HUD, 0);
 
 		vkCmdEndRenderPass(cb);
 		VK_CHECK(vkEndCommandBuffer(cb));

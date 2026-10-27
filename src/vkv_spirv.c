@@ -136,6 +136,7 @@ typedef struct Tr {
 	VkvSpirvUniform *unis;
 	uint32_t  uniCount, uniCap;
 	Sb        intInit;     /* "name = int(name_vkv);" lines for integer uniforms */
+	bool      pointSize;   /* the vertex shader writes gl_PointSize */
 } Tr;
 
 static const char *k_unsupportedRes[] = {
@@ -246,7 +247,10 @@ static bool reflect(Tr *t, spvc_compiler comp, spvc_resources res) {
 			char sem[16];
 			spvc_hlsl_vertex_attribute_remap remap;
 			remap.location = spvc_compiler_get_decoration(comp, list[i].id, SpvDecorationLocation);
-			snprintf(sem, sizeof(sem), "ATTR%u", remap.location);
+			const char *nm = spvc_compiler_get_name(comp, list[i].id);
+			if (nm && !strcmp(nm, "vkv_vertex_index")) snprintf(sem, sizeof(sem), "INDEX");
+			else if (nm && !strcmp(nm, "vkv_instance_index")) snprintf(sem, sizeof(sem), "INSTANCE");
+			else snprintf(sem, sizeof(sem), "ATTR%u", remap.location);
 			remap.semantic = sem;
 			if (spvc_compiler_hlsl_add_vertex_attribute_remap(comp, &remap, 1) != SPVC_SUCCESS)
 				logf_(t->c, VKV_SPIRV_LOG_ERROR, "could not remap vertex input '%s'", list[i].name);
@@ -382,7 +386,10 @@ static bool parse_io(Tr *t, const char *line, Io *io) {
 	snprintf(io->name, sizeof(io->name), "%s", name);
 	snprintf(io->sem, sizeof(io->sem), "%s", sem);
 
-	if (!strcmp(io->sem, "VPOS")) snprintf(io->sem, sizeof(io->sem), "WPOS");
+	bool gxmIndex = !strcmp(io->sem, "INDEX") || !strcmp(io->sem, "INSTANCE");
+	if (!strcmp(io->name, "vkv_point_coord")) snprintf(io->sem, sizeof(io->sem), "SPRITECOORD");
+	else if (gxmIndex) snprintf(io->type, sizeof(io->type), "int"); /* the GXM compiler declares these as int */
+	else if (!strcmp(io->sem, "VPOS")) snprintf(io->sem, sizeof(io->sem), "WPOS");
 	else if (!strcmp(io->sem, "SV_IsFrontFace")) {
 		snprintf(io->sem, sizeof(io->sem), "FACE");
 		snprintf(io->type, sizeof(io->type), "float");
@@ -397,7 +404,7 @@ static bool parse_io(Tr *t, const char *line, Io *io) {
 	const char *suffix;
 	VkvSpirvScalar kind = scalar_kind(io->type, &suffix);
 	bool attribute = t->stage == VKV_SPIRV_VERTEX && starts_with(io->sem, "ATTR");
-	if (!io->frontFacing && suffix && kind != VKV_SPIRV_FLOAT && !attribute) {
+	if (!io->frontFacing && !gxmIndex && suffix && kind != VKV_SPIRV_FLOAT && !attribute) {
 		io->isInt = true;
 		snprintf(io->floatType, sizeof(io->floatType), "float%s", suffix);
 	}
@@ -443,6 +450,40 @@ static void fix_literal_swizzles(Sb *o, const char *line) {
 		sb_add(o, s, (size_t)(lit - s));
 		if (xs == 1) sb_add(o, lit, (size_t)(hit + 1 - lit));
 		else sb_printf(o, "float%u(%.*s)", (unsigned)xs, (int)(hit + 1 - lit), lit);
+		s = hit + 2 + xs;
+	}
+}
+
+/* (-1.0f).xx -> float2(-1.0f): same as above for a literal in parentheses. */
+static char *fix_paren_literal_swizzles(const char *line) {
+	Sb o = { 0 };
+	const char *s = line;
+	for (;;) {
+		const char *hit = strstr(s, ").x");
+		const char *open = NULL;
+		size_t xs = 0;
+		while (hit) {
+			xs = 0;
+			while (hit[2 + xs] == 'x') xs++;
+			if (xs >= 1 && xs <= 4 && !is_ident(hit[2 + xs])) {
+				const char *b = hit;
+				while (b > s && b[-1] != '(' && b[-1] != ')') b--;
+				if (b > s && b[-1] == '(' && !(b - 1 > line && is_ident(b[-2]))) {
+					/* the parentheses must hold nothing but a number */
+					bool num = b < hit, digit = false;
+					for (const char *q = b; q < hit && num; q++) {
+						if (isdigit((unsigned char)*q)) digit = true;
+						else if (!strchr("+-.eEf ", *q)) num = false;
+					}
+					if (num && digit) { open = b - 1; break; }
+				}
+			}
+			hit = strstr(hit + 1, ").x");
+		}
+		if (!open) { sb_puts(&o, s); return o.p; }
+		sb_add(&o, s, (size_t)(open - s));
+		if (xs == 1) sb_add(&o, open, (size_t)(hit + 1 - open));
+		else sb_printf(&o, "float%u%.*s", (unsigned)xs, (int)(hit + 1 - open), open);
 		s = hit + 2 + xs;
 	}
 }
@@ -521,6 +562,7 @@ static void emit_main_statement(Tr *t, Sb *o, const char *line) {
 	if (!cur) { o->oom = true; return; }
 	sb_puts(o, cur);
 	sb_puts(o, "\n");
+	if (t->pointSize && strstr(cur, "vert_main();")) sb_puts(o, "    stage_output_gl_PointSize = gl_PointSize;\n");
 	free(cur);
 }
 
@@ -563,6 +605,15 @@ static char *rewrite(Tr *t, const char *hlsl) {
 	for (size_t i = 0; i < count; i++) {
 		if (!strcmp(lines[i], "struct SPIRV_Cross_Input")) collect_struct(t, lines, count, &i, t->in, &t->inCount);
 		else if (!strcmp(lines[i], "struct SPIRV_Cross_Output")) collect_struct(t, lines, count, &i, t->out, &t->outCount);
+		else if (!strcmp(lines[i], "static float gl_PointSize;")) t->pointSize = t->stage == VKV_SPIRV_VERTEX;
+	}
+	/* shader model 3 compatibility drops gl_PointSize, GXM has it as PSIZE */
+	if (t->pointSize && t->outCount < MAX_IO) {
+		Io *io = &t->out[t->outCount++];
+		memset(io, 0, sizeof(*io));
+		snprintf(io->type, sizeof(io->type), "float");
+		snprintf(io->name, sizeof(io->name), "gl_PointSize");
+		snprintf(io->sem, sizeof(io->sem), "PSIZE");
 	}
 
 	Sb o = { 0 };
@@ -609,7 +660,10 @@ static char *rewrite(Tr *t, const char *hlsl) {
 			sb_puts(&o, "}\n");
 			continue;
 		}
-		fix_literal_swizzles(&o, line);
+		char *fixed = fix_paren_literal_swizzles(line);
+		if (!fixed) { o.oom = true; break; }
+		fix_literal_swizzles(&o, fixed);
+		free(fixed);
 		sb_puts(&o, "\n");
 	}
 	free(lines);
@@ -643,23 +697,27 @@ int vkv_spirv_translate(const uint32_t *words, size_t wordCount, VkvSpirvStage s
 	char *cg = NULL;
 	SpvExecutionModel want = stage == VKV_SPIRV_VERTEX ? SpvExecutionModelVertex : SpvExecutionModelFragment;
 
-	uint32_t *lowered = NULL;
-	size_t loweredCount = 0;
-	if (stage == VKV_SPIRV_FRAGMENT) {
-		int lr = vkv_spirv_lower_subpass(words, wordCount, &lowered, &loweredCount);
-		if (lr < 0) {
-			logf_(&c, VKV_SPIRV_LOG_ERROR, "malformed SPIR-V module");
-			free(t);
-			return -1;
-		}
-		if (lr > 0) {
-			logf_(&c, VKV_SPIRV_LOG_INFO, "subpass inputs are read as textures at the current pixel");
-			words = lowered;
-			wordCount = loweredCount;
-		}
+	uint32_t *builtins = NULL, *lowered = NULL;
+	size_t builtinsCount = 0, loweredCount = 0;
+	int br = vkv_spirv_lower_builtins(words, wordCount, &builtins, &builtinsCount);
+	if (br > 0) {
+		words = builtins;
+		wordCount = builtinsCount;
+	}
+	int lr = br < 0 || stage != VKV_SPIRV_FRAGMENT ? 0 : vkv_spirv_lower_subpass(words, wordCount, &lowered, &loweredCount);
+	if (br < 0 || lr < 0) {
+		logf_(&c, VKV_SPIRV_LOG_ERROR, "malformed SPIR-V module");
+		free(builtins);
+		free(t);
+		return -1;
+	}
+	if (lr > 0) {
+		logf_(&c, VKV_SPIRV_LOG_INFO, "subpass inputs are read as textures at the current pixel");
+		words = lowered;
+		wordCount = loweredCount;
 	}
 
-	if (spvc_context_create(&ctx) != SPVC_SUCCESS) { free(lowered); free(t); return -1; }
+	if (spvc_context_create(&ctx) != SPVC_SUCCESS) { free(lowered); free(builtins); free(t); return -1; }
 	spvc_context_set_error_callback(ctx, spvc_error_cb, &c);
 	if (spvc_context_parse_spirv(ctx, (const SpvId *)words, wordCount, &ir) != SPVC_SUCCESS) goto done;
 	if (spvc_context_create_compiler(ctx, SPVC_BACKEND_HLSL, ir, SPVC_CAPTURE_MODE_TAKE_OWNERSHIP, &comp) != SPVC_SUCCESS)
@@ -714,6 +772,7 @@ done:
 	free(t);
 	if (ctx) spvc_context_destroy(ctx);
 	free(lowered);
+	free(builtins);
 	return out->cg ? 0 : -1;
 }
 

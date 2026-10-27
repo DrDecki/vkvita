@@ -277,3 +277,73 @@ int vkv_spirv_lower_subpass(const uint32_t *w, size_t n, uint32_t **outWords, si
 	*outCount = o.n;
 	return 1;
 }
+
+/* ------------------------------------------------------------------------ */
+/* Built-ins that GXM has as semantics but shader model 3 does not          */
+/* ------------------------------------------------------------------------ */
+/* gl_VertexIndex, gl_InstanceIndex and gl_PointCoord become ordinary inputs
+ * with fixed names; the Cg rewrite gives them the INDEX, INSTANCE and
+ * SPRITECOORD semantics of the GXM compiler. */
+enum { DEC_LOCATION = 30, BUILTIN_POINT_COORD = 16, BUILTIN_VERTEX_INDEX = 42, BUILTIN_INSTANCE_INDEX = 43 };
+
+typedef struct { uint32_t builtin, location; const char *name; } BuiltinMap;
+static const BuiltinMap k_builtins[] = {
+	{ BUILTIN_VERTEX_INDEX, 29, "vkv_vertex_index" },
+	{ BUILTIN_INSTANCE_INDEX, 30, "vkv_instance_index" },
+	{ BUILTIN_POINT_COORD, 31, "vkv_point_coord" },
+};
+
+static const BuiltinMap *builtin_map(uint32_t builtin) {
+	for (size_t k = 0; k < sizeof(k_builtins) / sizeof(k_builtins[0]); k++)
+		if (k_builtins[k].builtin == builtin) return &k_builtins[k];
+	return NULL;
+}
+
+int vkv_spirv_lower_builtins(const uint32_t *w, size_t n, uint32_t **outWords, size_t *outCount) {
+	*outWords = NULL;
+	*outCount = 0;
+	if (n < 5 || w[0] != VKV_SPIRV_MAGIC) return -1;
+	uint32_t ids[MAX_IDS], idN = 0;
+	const BuiltinMap *maps[MAX_IDS];
+	for (size_t i = 5; i < n;) {
+		uint32_t len = w[i] >> 16, op = w[i] & 0xFFFF;
+		if (!len || i + len > n) return -1;
+		const uint32_t *a = w + i + 1;
+		if (op == OP_DECORATE && len >= 4 && a[1] == DEC_BUILTIN && builtin_map(a[2]) && idN < MAX_IDS) {
+			ids[idN] = a[0];
+			maps[idN++] = builtin_map(a[2]);
+		}
+		i += len;
+	}
+	if (!idN) return 0;
+
+	Out o = { 0 };
+	for (int k = 0; k < 5; k++) put(&o, w[k]);
+	bool namesDone = false;
+	for (size_t i = 5; i < n;) {
+		uint32_t len = w[i] >> 16, op = w[i] & 0xFFFF;
+		const uint32_t *a = w + i + 1;
+		i += len;
+		if (op == OP_NAME && in_list(ids, idN, a[0])) continue;
+		if (!namesDone && (op == OP_DECORATE || op == OP_MEMBER_DECORATE || (op >= 19 && op <= 39) ||
+		                   op == OP_CONSTANT || op == OP_VARIABLE || op == OP_FUNCTION)) {
+			namesDone = true;
+			for (uint32_t k = 0; k < idN; k++) {
+				const uint32_t id[] = { ids[k] };
+				inst_str(&o, OP_NAME, id, 1, maps[k]->name);
+			}
+		}
+		if (op == OP_DECORATE && len >= 4 && a[1] == DEC_BUILTIN && in_list(ids, idN, a[0])) {
+			INST(&o, OP_DECORATE, a[0], DEC_LOCATION, maps[index_of(ids, idN, a[0])]->location);
+			continue;
+		}
+		for (uint32_t m = 0; m < len; m++) put(&o, w[i - len + m]);
+	}
+	if (o.oom) {
+		free(o.w);
+		return -1;
+	}
+	*outWords = o.w;
+	*outCount = o.n;
+	return 1;
+}
