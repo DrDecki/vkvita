@@ -25,8 +25,8 @@ as unsupported.
 |---|---|---|
 | `vkAllocateMemory`, `vkFreeMemory`, `vkMapMemory`, `vkUnmapMemory`, `vkFlush/InvalidateMappedMemoryRanges` | full | Type 0: CDRAM (device local + host visible). Type 1: uncached main RAM. Both coherent. Allocations up to 512 KiB are sub-allocated |
 | `vkCreateBuffer`, `vkBindBufferMemory`, `vkGetBufferMemoryRequirements` | full | Vertex, index, uniform, indirect, transfer usages. Storage/texel usages are accepted but not functional |
-| `vkCreateImage`, `vkBindImageMemory`, `vkGetImageMemoryRequirements`, `vkGetImageSubresourceLayout` | partial | 2D, 1 sample. Mipmaps on power-of-two sizes. Cube maps (6 layers + CUBE_COMPATIBLE, square power-of-two, 1 level). Other array layers are not stored. Normal images are linear (row pitch = width aligned to 8 texels), cube maps and compressed images use the GXM swizzled layout. Depth formats all map to D24S8 |
-| `vkCreateImageView` | partial | 2D and cube views, any base level and level count. Component swizzles are ignored. Rendering into a mip level works |
+| `vkCreateImage`, `vkBindImageMemory`, `vkGetImageMemoryRequirements`, `vkGetImageSubresourceLayout` | partial | 2D, 1 sample. Mipmaps on power-of-two sizes. Cube maps (6 layers + CUBE_COMPATIBLE, square power-of-two, with or without mipmaps). Other array layers are not stored. Normal images are linear (row pitch = width aligned to 8 texels), cube maps and compressed images use the GXM swizzled layout. Depth formats all map to D24S8 |
+| `vkCreateImageView` | partial | 2D and cube views, any base level and level count (cube views of a mipmapped cube must start at level 0). Component swizzles are ignored. Rendering into a mip level works |
 | `vkCreateSampler` | partial | Nearest/linear, mipmap nearest/linear, repeat/mirror/clamp, `maxLod` limits the sampled levels. No border color, anisotropy, compare, minLod, LOD bias |
 
 Formats usable as textures: RGBA8, BGRA8 (+SRGB, decoded by the texture

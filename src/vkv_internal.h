@@ -217,7 +217,9 @@ struct VkDevice_T {
 
 	volatile unsigned int *notifRegion;
 	uint8_t               notifUsed[VKV_NOTIF_SLOTS];
-	uint32_t              notifCounter;
+	int32_t               progressSlot;
+	SceGxmNotification    progress;
+	uint32_t              sceneSerial;
 
 	VkvGpuBlock           linearIdx16;
 	uint32_t              linearIdx16Count;
@@ -245,6 +247,7 @@ typedef struct VkQueryPool_T {
 	uint32_t    visBase;
 	uint64_t   *values;
 	uint8_t    *written;
+	uint32_t   *serial;
 } VkvQueryPool;
 
 typedef struct VkEvent_T {
@@ -256,7 +259,7 @@ typedef struct VkEvent_T {
 
 bool vkv_vis_init(struct VkDevice_T *dev);
 void vkv_query_begin(struct VkDevice_T *dev, SceGxmContext *ctx, VkvQueryPool *p, uint32_t q);
-void vkv_query_end(SceGxmContext *ctx);
+void vkv_query_end(struct VkDevice_T *dev, SceGxmContext *ctx, VkvQueryPool *p, uint32_t q);
 void vkv_query_reset(struct VkDevice_T *dev, VkvQueryPool *p, uint32_t first, uint32_t count);
 
 typedef struct VkDeviceMemory_T {
@@ -668,8 +671,7 @@ void *vkv_cmd_alloc(struct VkCommandBuffer_T *cb, VkvCmdType type, uint32_t size
 typedef struct VkFence_T {
 	VkvObject               obj;
 	struct VkDevice_T      *device;
-	int32_t                 slot;
-	SceGxmNotification      notif;
+	uint32_t                serial;
 	bool                    signaled;
 	bool                    pending;
 } VkvFence;
@@ -695,6 +697,7 @@ typedef struct VkSwapchainKHR_T {
 VkResult vkv_queue_execute(struct VkDevice_T *dev, uint32_t cbCount, const VkCommandBuffer *cbs,
                            VkvFence *fence);
 void     vkv_device_wait_gpu(struct VkDevice_T *dev);
+bool     vkv_serial_done(const struct VkDevice_T *dev, uint32_t serial);
 int32_t  vkv_notif_alloc(struct VkDevice_T *dev);
 void     vkv_notif_free(struct VkDevice_T *dev, int32_t slot);
 

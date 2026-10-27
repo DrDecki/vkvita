@@ -123,7 +123,7 @@ Samples can be found in the `samples` folder.
 | `textured_cube` | Textures, depth, instancing, push constants and debug toggles on buttons |
 | `fixed_function` | GL 1.x style drawing through the fixed function layer |
 | `spirv_cube` | The cube with GLSL shaders compiled to SPIR-V, push constants, a uniform buffer and a texture |
-| `gpu_features` | Mipmaps (uploaded and blitted), a cube map, a BC1 texture with a separate sampler, wide lines, indirect draws and occlusion queries |
+| `gpu_features` | Mipmaps (uploaded and blitted), a mipmapped cube map, a BC1 texture with a separate sampler, wide lines, indirect draws and occlusion queries |
 | `standalone_template` | A starting point for your own project |
 
 ## Tools
