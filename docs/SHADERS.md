@@ -38,12 +38,17 @@ Nothing from the sections below has to be done by hand:
 - Integer push constant and uniform buffer members are converted to float on
   upload and back to int in the shader.
 - Integer varyings (`flat out int`) are carried as floats and rounded.
+- Subpass inputs (`subpassInput` / `subpassLoad`) are rewritten in the
+  SPIR-V before translation: the attachment becomes a texture sampled at the
+  center of the current pixel, with 1 / framebuffer size coming from a small
+  uniform block VkVita fills itself (descriptor set 31). Only color
+  attachments can be inputs.
 - Separate `texture2D` / `sampler` objects are combined. Every image and
   sampler pair used in the shader gets its own texture unit, and VkVita
   builds the texture from both descriptors at draw time.
 
 Not supported (the translation fails with a message naming the resource):
-sampler arrays, storage buffers and images, subpass inputs,
+sampler arrays, storage buffers and images,
 `gl_VertexIndex` / `gl_InstanceIndex`, compute and geometry stages. Struct
 members inside uniform blocks are declared but not fed yet.
 

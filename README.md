@@ -109,7 +109,7 @@ Most Vulkan code works unchanged. The parts that are different on the Vita:
 
 - **Surface:** use `VK_EXT_headless_surface` or `vkvCreateDisplaySurface()`. The swapchain is always 960x544.
 - **Shaders:** SPIR-V works for the usual vertex and fragment shaders. Storage buffers and compute do not exist on GXM.
-- **Limits:** one color attachment, one subpass, no compute, no MSAA yet. Mipmaps need power-of-two textures. The full list is in [docs/COVERAGE.md](docs/COVERAGE.md).
+- **Limits:** one color attachment per subpass, no compute, no MSAA yet. Mipmaps need power-of-two textures. The full list is in [docs/COVERAGE.md](docs/COVERAGE.md).
 
 There is also a small fixed function layer (`vkvita_ff.h`) for old GL 1.x style code, see [docs/FIXED_FUNCTION.md](docs/FIXED_FUNCTION.md).
 
@@ -124,6 +124,7 @@ Samples can be found in the `samples` folder.
 | `fixed_function` | GL 1.x style drawing through the fixed function layer |
 | `spirv_cube` | The cube with GLSL shaders compiled to SPIR-V, push constants, a uniform buffer and a texture |
 | `gpu_features` | Mipmaps (uploaded and blitted), a mipmapped cube map, a BC1 texture with a separate sampler, wide lines, indirect draws and occlusion queries |
+| `subpasses` | A render pass with three subpasses, one of them reading the first through an input attachment |
 | `standalone_template` | A starting point for your own project |
 
 ## Tools

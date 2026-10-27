@@ -305,6 +305,7 @@ typedef struct VkImage_T {
 	bool                  swizzled;
 	bool                  written;
 	bool                  pendingDepthClear;
+	uint32_t              readSerial;
 	float                 clearDepth;
 	uint32_t              clearStencil;
 } VkvImage;
@@ -456,12 +457,27 @@ typedef struct VkvAttachmentDesc {
 	VkAttachmentStoreOp storeOp, stencilStoreOp;
 } VkvAttachmentDesc;
 
+#define VKV_MAX_SUBPASSES 8
+#define VKV_MAX_INPUTS    4
+#define VKV_INTERNAL_SET  31
+
+typedef struct VkvSubpass {
+	int32_t  color, depth;
+	int32_t  input[VKV_MAX_INPUTS];
+	uint32_t inputCount;
+	bool     newScene;
+	uint32_t runEnd;
+} VkvSubpass;
+
 typedef struct VkRenderPass_T {
 	VkvObject         obj;
 	uint32_t          attachmentCount;
 	VkvAttachmentDesc att[8];
 	int32_t           colorIndex;
 	int32_t           depthIndex;
+	uint32_t          subpassCount;
+	VkvSubpass        sub[VKV_MAX_SUBPASSES];
+	int8_t            firstUse[8], lastUse[8];
 } VkvRenderPass;
 
 typedef struct VkFramebuffer_T {
@@ -480,6 +496,7 @@ typedef struct VkPipeline_T {
 	struct VkDevice_T        *device;
 	VkvPipelineLayout        *layout;
 	VkvRenderPass            *rp;
+	uint32_t                  subpass;
 	const SceGxmProgram      *vprog, *fprog;
 	SceGxmShaderPatcherId     vpid, fpid;
 	VkvShaderModule          *vmod, *fmod;
@@ -577,7 +594,8 @@ typedef enum VkvCmdType {
 	VKV_CMD_QUERY_END,
 	VKV_CMD_QUERY_RESET,
 	VKV_CMD_TIMESTAMP,
-	VKV_CMD_SET_EVENT
+	VKV_CMD_SET_EVENT,
+	VKV_CMD_NEXT_SUBPASS
 } VkvCmdType;
 
 typedef struct VkvCmd {
@@ -656,6 +674,7 @@ struct VkCommandBuffer_T {
 	bool                      inRenderPass;
 	VkvPipeline              *pipeline;
 	VkvRenderPass            *rp;
+	uint32_t                  subpass;
 	uint32_t                  sceneCount;
 	bool                      oom;
 	bool                      secondary;

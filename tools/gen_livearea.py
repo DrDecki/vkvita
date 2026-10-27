@@ -25,6 +25,8 @@ SAMPLES = {
                        tagline="GLSL compiled to SPIR-V, translated at runtime"),
     "gpu_features": dict(label="Features", accent=(240, 180, 40), motif="panels",
                          tagline="Mipmaps, cube maps, queries, lines and more"),
+    "subpasses": dict(label="Subpass", accent=(40, 200, 210), motif="layers",
+                      tagline="Three subpasses and an input attachment in one render pass"),
 }
 
 
@@ -110,6 +112,16 @@ def draw_motif(d, kind, accent, cx, cy, size):
             x0, y0 = cx + ox * size - s * 0.6, cy + oy * size - s * 0.6
             od.rounded_rectangle([x0, y0, x0 + s * 1.2, y0 + s * 1.2], radius=s * 0.12, fill=col + (190,))
             img.paste(Image.alpha_composite(img.convert("RGBA"), over).convert("RGB"))
+    elif kind == "layers":
+        # three stacked layers, one per subpass
+        w, h, dy = size * 1.6, size * 0.55, size * 0.55
+        for k in range(3):
+            y = cy - size * 0.75 + k * dy
+            col = shade(accent, 1.15 - k * 0.3)
+            pts = [(cx - w / 2 + h * 0.5, y - h / 2), (cx + w / 2 + h * 0.5, y - h / 2),
+                   (cx + w / 2 - h * 0.5, y + h / 2), (cx - w / 2 - h * 0.5, y + h / 2)]
+            d.polygon(pts, fill=shade(col, 0.4), outline=col)
+            d.line(pts + [pts[0]], fill=col, width=max(SS, int(size * 0.045)))
     elif kind == "panels":
         g = size * 0.08
         cell = size - g / 2
