@@ -263,6 +263,8 @@ static void vkv_device_teardown(struct VkDevice_T *d) {
 	vkv_free_fragment_usse(d->fragUsseRingUid);
 	vkv_gpu_free(&d->linearIdx16);
 	vkv_gpu_free(&d->linearIdx32);
+	vkv_gpu_free(&d->stripIdx16);
+	vkv_gpu_free(&d->stripRing);
 	vkv_gpu_free(&d->visBuf);
 	vkv_pool_destroy(&d->pool);
 	free(d->ctxHostMem);
@@ -394,6 +396,14 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice pd, const VkDevic
 	if (vkv_gpu_alloc(VKV_HEAP_RAM, d->linearIdx16Count * 2, SCE_GXM_MEMORY_ATTRIB_READ, &d->linearIdx16)) {
 		uint16_t *idx = d->linearIdx16.base;
 		for (uint32_t i = 0; i < d->linearIdx16Count; i++) idx[i] = (uint16_t)i;
+	}
+	/* line strips become line lists: vertex pairs (k, k + 1) */
+	if (vkv_gpu_alloc(VKV_HEAP_RAM, VKV_STRIP_PAIRS * 4, SCE_GXM_MEMORY_ATTRIB_READ, &d->stripIdx16)) {
+		uint16_t *idx = d->stripIdx16.base;
+		for (uint32_t k = 0; k < VKV_STRIP_PAIRS; k++) {
+			idx[2 * k] = (uint16_t)k;
+			idx[2 * k + 1] = (uint16_t)(k + 1);
+		}
 	}
 
 	VKV_INFO("device ready: GXM initialized, parameter buffer %u KB, display queue depth %u",

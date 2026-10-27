@@ -841,6 +841,50 @@ static const void *vkv_linear_indices(struct VkDevice_T *dev, uint32_t count, bo
 	return dev->linearIdx32.base;
 }
 
+/* Indices for a line strip drawn as a line list: count - 1 vertex pairs. */
+static const void *vkv_strip_indices(VkvReplay *R, const void *appIdx, bool *is32, uint32_t count) {
+	struct VkDevice_T *d = R->dev;
+	uint32_t pairs = count - 1;
+	if (!appIdx) {
+		if (pairs > VKV_STRIP_PAIRS || !d->stripIdx16.base) {
+			VKV_UNSUPPORTED("non-indexed line strips with more than 65536 vertices (skipped)");
+			return NULL;
+		}
+		*is32 = false;
+		return d->stripIdx16.base;
+	}
+	uint32_t isz = *is32 ? 4 : 2, bytes = VKV_ALIGN(pairs * 2 * isz, 16);
+	if (bytes > VKV_STRIP_RING) {
+		VKV_UNSUPPORTED("indexed line strips with more than 32768 lines (skipped)");
+		return NULL;
+	}
+	if (!d->stripRing.base && !vkv_gpu_alloc(VKV_HEAP_RAM, VKV_STRIP_RING, SCE_GXM_MEMORY_ATTRIB_READ, &d->stripRing))
+		return NULL;
+	uint32_t scene = d->sceneSerial + 1;
+	if (d->stripRingPos + bytes > VKV_STRIP_RING) {
+		/* the open scene still reads what it put in the ring */
+		if (d->stripRingScene == scene) {
+			VKV_UNSUPPORTED("more than 256 KB of indexed line strips in one render pass (skipped)");
+			return NULL;
+		}
+		if (d->gpuBusy) vkv_device_wait_gpu(d);
+		d->stripRingPos = 0;
+	}
+	uint8_t *out = (uint8_t *)d->stripRing.base + d->stripRingPos;
+	if (*is32) {
+		const uint32_t *in = appIdx;
+		uint32_t *o = (uint32_t *)out;
+		for (uint32_t k = 0; k < pairs; k++) { o[2 * k] = in[k]; o[2 * k + 1] = in[k + 1]; }
+	} else {
+		const uint16_t *in = appIdx;
+		uint16_t *o = (uint16_t *)out;
+		for (uint32_t k = 0; k < pairs; k++) { o[2 * k] = in[k]; o[2 * k + 1] = in[k + 1]; }
+	}
+	d->stripRingPos += bytes;
+	d->stripRingScene = scene;
+	return out;
+}
+
 static void vkv_exec_draw(VkvReplay *R, const VkvCmdDraw *c, bool indexed) {
 	VkvPipeline *p = R->pipe;
 	if (!R->inScene || !p) return;
@@ -865,6 +909,13 @@ static void vkv_exec_draw(VkvReplay *R, const VkvCmdDraw *c, bool indexed) {
 	} else {
 		indices = vkv_linear_indices(R->dev, c->count, &is32);
 		if (!indices) return;
+	}
+	uint32_t drawCount = c->count;
+	if (p->lineStrip) {
+		if (c->count < 2) return;
+		indices = vkv_strip_indices(R, indexed ? indices : NULL, &is32, c->count);
+		if (!indices) return;
+		drawCount = 2 * (c->count - 1);
 	}
 	ifmt = is32 ? SCE_GXM_INDEX_FORMAT_U32 : SCE_GXM_INDEX_FORMAT_U16;
 
@@ -910,10 +961,10 @@ static void vkv_exec_draw(VkvReplay *R, const VkvCmdDraw *c, bool indexed) {
 		}
 
 		R->sceneDraws++;
-		int r = sceGxmDraw(R->ctx, p->prim, ifmt, indices, c->count);
+		int r = sceGxmDraw(R->ctx, p->prim, ifmt, indices, drawCount);
 		if (r < 0) VKV_ERROR("sceGxmDraw failed 0x%08X (pipeline '%s')", (unsigned)r, p->vname);
 		g_vkv.cur.drawCalls++;
-		g_vkv.cur.indices += c->count;
+		g_vkv.cur.indices += drawCount;
 	}
 }
 

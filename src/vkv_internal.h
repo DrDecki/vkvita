@@ -256,6 +256,9 @@ struct VkDevice_T {
 	uint32_t              linearIdx16Count;
 	VkvGpuBlock           linearIdx32;
 	uint32_t              linearIdx32Count;
+	VkvGpuBlock           stripIdx16;     /* 0,1, 1,2, 2,3 ... for non-indexed line strips */
+	VkvGpuBlock           stripRing;      /* line pairs built from app indices */
+	uint32_t              stripRingPos, stripRingScene;
 
 	bool                  sharkReady;
 	bool                  sharkTried;
@@ -282,6 +285,8 @@ struct VkDevice_T {
 void vkv_clear_programs_free(struct VkDevice_T *d);
 
 #define VKV_GPU_CORES 4
+#define VKV_STRIP_PAIRS   65535u          /* line strips up to 65536 vertices without index buffer */
+#define VKV_STRIP_RING    (256u * 1024u)  /* bytes for indexed line strips */
 
 typedef struct VkQueryPool_T {
 	VkvObject   obj;
@@ -617,6 +622,7 @@ typedef struct VkPipeline_T {
 	/* fixed state */
 	SceGxmPrimitiveType       prim;
 	bool                      primSupported;
+	bool                      lineStrip;      /* LINE_STRIP drawn as GXM lines, indices made in pairs */
 	SceGxmCullMode            cull;
 	VkCullModeFlags           vkCull;
 	VkFrontFace               vkFront;
