@@ -43,8 +43,8 @@ RGBA16F, RG16F, R16F, R32F. Compressed formats must be power-of-two sized.
 | `vkCreateGraphicsPipelines`, `vkDestroyPipeline` | partial | Vertex + fragment only. Topologies: point list, line list, triangle list/strip/fan. Blend ops add/sub/rev-sub/min/max, all factors except constant/dual-source. Polygon modes fill/line/point. Depth, stencil (two-sided), depth bias. Dynamic: viewport, scissor, depth bias, stencil masks/reference |
 | `vkCreateComputePipelines` | stub | Returns `VK_ERROR_FEATURE_NOT_PRESENT` |
 | `vkCreatePipelineLayout`, `vkCreatePipelineCache` (+ get/merge) | full | Pipeline cache data is empty (GXM patching is fast) |
-| `vkCreateDescriptorSetLayout`, pools, `vkAllocate/Free/ResetDescriptorSets`, `vkUpdateDescriptorSets` | partial | Uniform buffer (+dynamic), combined image sampler, sampled image, sampler, immutable samplers. Up to 4 sets. For Cg shaders binding n = GXM texture unit n; SPIR-V shaders carry their own table |
-| `vkCreateRenderPass`, `vkCreateFramebuffer` | partial | One subpass, at most one color attachment and one depth/stencil attachment. No input/resolve attachments |
+| `vkCreateDescriptorSetLayout`, pools, `vkAllocate/Free/ResetDescriptorSets`, `vkUpdateDescriptorSets` | partial | Uniform buffer (+dynamic), combined image sampler, sampled image, sampler, immutable samplers, input attachments (color only, SPIR-V shaders). Up to 4 sets. For Cg shaders binding n = GXM texture unit n; SPIR-V shaders carry their own table |
+| `vkCreateRenderPass`, `vkCreateFramebuffer` | partial | Up to 8 subpasses with one color and one depth/stencil attachment each, up to 4 color input attachments per subpass. A subpass gets its own GXM scene unless it renders to the same attachments as the one before and reads no inputs. Dependencies are implied by scene order. No resolve attachments |
 
 ## Commands
 
@@ -63,7 +63,8 @@ RGBA16F, RG16F, R16F, R32F. Compressed formats must be power-of-two sized.
 | `vkCmdCopyImage`, `vkCmdBlitImage` | full | On the CPU at submit. Blits scale and flip; LINEAR filters 8-bit formats, others use nearest. Mipmap generation with a blit chain works |
 | `vkCmdClearDepthStencilImage` | full | Applied as the background depth/stencil of the next scene that uses the image |
 | `vkCmdSetLineWidth` | full | Whole pixels, 1 to 16 |
-| `vkCmdSetBlendConstants/DepthBounds`, `vkCmdNextSubpass` | stub | Logged once as unsupported |
+| `vkCmdNextSubpass` | full | |
+| `vkCmdSetBlendConstants/DepthBounds` | stub | Logged once as unsupported |
 
 ## Synchronization
 
@@ -83,8 +84,11 @@ RGBA16F, RG16F, R16F, R32F. Compressed formats must be power-of-two sized.
   so a scissor that is not tile aligned clips too little (a warning is
   logged once). UI code that clips text with scissor will show overdraw.
   Pixel-exact scissor needs a stencil/mask pass and is on the to-do list.
-- **One color attachment, one subpass.** MRT and subpass inputs are not
-  available on GXM in the same form.
+- **One color attachment per subpass.** GXM has a single color output, so
+  MRT is not available. Subpasses work, but every subpass that reads an input
+  attachment ends the scene before it and reads the result back from memory,
+  so they cost what separate render passes cost. Depth attachments cannot be
+  read as inputs.
 - **Copies run on the CPU.** Fine for loading; per-frame staging copies cost
   a GPU sync. Write per-frame data into mapped memory instead.
 - **Normal textures are linear.** Large textures sample slower than GXM's

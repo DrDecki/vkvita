@@ -88,9 +88,9 @@ if(VKV_WITH_SPIRV)
     ${VKV_SPIRV_CROSS_DIR}/spirv_hlsl.cpp
     ${VKV_SPIRV_CROSS_DIR}/spirv_parser.cpp
   )
-  target_sources(vkvita PRIVATE src/vkv_spirv.c ${VKV_SPIRV_CROSS_SOURCES})
+  target_sources(vkvita PRIVATE src/vkv_spirv.c src/vkv_spirv_lower.c ${VKV_SPIRV_CROSS_SOURCES})
   set_source_files_properties(${VKV_SPIRV_CROSS_SOURCES} PROPERTIES COMPILE_OPTIONS "-Os;-w")
-  set_source_files_properties(src/vkv_spirv.c PROPERTIES COMPILE_OPTIONS "-Os")
+  set_source_files_properties(src/vkv_spirv.c src/vkv_spirv_lower.c PROPERTIES COMPILE_OPTIONS "-Os")
   target_include_directories(vkvita PRIVATE ${VKV_SPIRV_CROSS_DIR})
   target_compile_definitions(vkvita PRIVATE SPIRV_CROSS_C_API_GLSL=1 SPIRV_CROSS_C_API_HLSL=1)
   target_compile_features(vkvita PRIVATE cxx_std_11)

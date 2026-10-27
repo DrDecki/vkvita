@@ -34,9 +34,10 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDescriptorSetLayout(VkDevice device, cons
 		case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
 		case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
 		case VK_DESCRIPTOR_TYPE_SAMPLER:
+		case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
 			break;
 		default:
-			VKV_UNSUPPORTED("storage, texel buffer and input attachment descriptors");
+			VKV_UNSUPPORTED("storage and texel buffer descriptors");
 			break;
 		}
 		if (b->pImmutableSamplers && b->descriptorCount &&
@@ -226,6 +227,24 @@ VKAPI_ATTR void VKAPI_CALL vkUpdateDescriptorSets(VkDevice device, uint32_t writ
 				d->valid = true;
 				break;
 			}
+			case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT: {
+				/* read by lowered SPIR-V as a texture at the current pixel: point sampling */
+				d->view = VKV_ND(VkvImageView, wr->pImageInfo[i].imageView);
+				d->valid = false;
+				if (VKV_CHECK(VKV_OBJ_OK(d->view, VKV_MAGIC_VIEW), "invalid image view")) break;
+				if (!d->view->texValid && !vkv_view_build_texture(d->view)) {
+					VKV_WARN("binding %u: input attachment format %d cannot be read", (unsigned)wr->dstBinding,
+					         (int)d->view->format);
+					break;
+				}
+				d->tex = d->view->tex;
+				sceGxmTextureSetMinFilter(&d->tex, SCE_GXM_TEXTURE_FILTER_POINT);
+				sceGxmTextureSetMagFilter(&d->tex, SCE_GXM_TEXTURE_FILTER_POINT);
+				sceGxmTextureSetUAddrMode(&d->tex, SCE_GXM_TEXTURE_ADDR_CLAMP);
+				sceGxmTextureSetVAddrMode(&d->tex, SCE_GXM_TEXTURE_ADDR_CLAMP);
+				d->valid = true;
+				break;
+			}
 			case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER: {
 				const VkDescriptorImageInfo *ii = &wr->pImageInfo[i];
 				VkvSampler *imm = vkv_set_immutable(s, wr->dstBinding, wr->dstArrayElement + i);
@@ -305,18 +324,25 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateRenderPass(VkDevice device, const VkRende
                                                   const VkAllocationCallbacks *alloc, VkRenderPass *pOut) {
 	VKV_TRACE("vkCreateRenderPass");
 	(void)device; (void)alloc;
-	if (ci->subpassCount != 1) {
-		VKV_ERROR("vkCreateRenderPass: only one subpass is supported (got %u); split into render passes",
+	if (!ci->subpassCount || ci->subpassCount > VKV_MAX_SUBPASSES) {
+		VKV_ERROR("vkCreateRenderPass: 1 to %d subpasses are supported (got %u)", VKV_MAX_SUBPASSES,
 		          (unsigned)ci->subpassCount);
 		return VK_ERROR_FEATURE_NOT_PRESENT;
 	}
-	const VkSubpassDescription *sp = &ci->pSubpasses[0];
-	if (sp->colorAttachmentCount > 1) {
-		VKV_ERROR("vkCreateRenderPass: GXM has one color output (got %u color attachments)",
-		          (unsigned)sp->colorAttachmentCount);
-		return VK_ERROR_FEATURE_NOT_PRESENT;
+	for (uint32_t i = 0; i < ci->subpassCount; i++) {
+		const VkSubpassDescription *sp = &ci->pSubpasses[i];
+		if (sp->colorAttachmentCount > 1) {
+			VKV_ERROR("vkCreateRenderPass: GXM has one color output (subpass %u has %u color attachments)", (unsigned)i,
+			          (unsigned)sp->colorAttachmentCount);
+			return VK_ERROR_FEATURE_NOT_PRESENT;
+		}
+		if (sp->inputAttachmentCount > VKV_MAX_INPUTS) {
+			VKV_ERROR("vkCreateRenderPass: at most %d input attachments per subpass (subpass %u has %u)", VKV_MAX_INPUTS,
+			          (unsigned)i, (unsigned)sp->inputAttachmentCount);
+			return VK_ERROR_FEATURE_NOT_PRESENT;
+		}
+		if (sp->pResolveAttachments) VKV_UNSUPPORTED("resolve attachments");
 	}
-	if (sp->inputAttachmentCount || sp->pResolveAttachments) VKV_UNSUPPORTED("input/resolve attachments");
 	if (VKV_CHECK(ci->attachmentCount <= 8, "too many attachments")) return VK_ERROR_FEATURE_NOT_PRESENT;
 
 	VkvRenderPass *rp = calloc(1, sizeof(*rp));
@@ -330,12 +356,47 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateRenderPass(VkDevice device, const VkRende
 		rp->att[i].stencilLoadOp = ci->pAttachments[i].stencilLoadOp;
 		rp->att[i].stencilStoreOp = ci->pAttachments[i].stencilStoreOp;
 	}
-	rp->colorIndex = -1;
-	rp->depthIndex = -1;
-	if (sp->colorAttachmentCount && sp->pColorAttachments[0].attachment != VK_ATTACHMENT_UNUSED)
-		rp->colorIndex = (int32_t)sp->pColorAttachments[0].attachment;
-	if (sp->pDepthStencilAttachment && sp->pDepthStencilAttachment->attachment != VK_ATTACHMENT_UNUSED)
-		rp->depthIndex = (int32_t)sp->pDepthStencilAttachment->attachment;
+	memset(rp->firstUse, -1, sizeof(rp->firstUse));
+	memset(rp->lastUse, -1, sizeof(rp->lastUse));
+	rp->subpassCount = ci->subpassCount;
+	for (uint32_t i = 0; i < ci->subpassCount; i++) {
+		const VkSubpassDescription *sp = &ci->pSubpasses[i];
+		VkvSubpass *s = &rp->sub[i];
+		s->color = s->depth = -1;
+		if (sp->colorAttachmentCount && sp->pColorAttachments[0].attachment != VK_ATTACHMENT_UNUSED)
+			s->color = (int32_t)sp->pColorAttachments[0].attachment;
+		if (sp->pDepthStencilAttachment && sp->pDepthStencilAttachment->attachment != VK_ATTACHMENT_UNUSED)
+			s->depth = (int32_t)sp->pDepthStencilAttachment->attachment;
+		for (uint32_t k = 0; k < sp->inputAttachmentCount; k++) {
+			uint32_t a = sp->pInputAttachments[k].attachment;
+			if (a == VK_ATTACHMENT_UNUSED || a >= ci->attachmentCount) continue;
+			const VkvFormatInfo *fi = vkv_format(rp->att[a].format);
+			if (fi && fi->isDepth) {
+				VKV_UNSUPPORTED("depth/stencil input attachments (GXM depth buffers cannot be sampled)");
+				continue;
+			}
+			if ((int32_t)a == s->color) VKV_UNSUPPORTED("reading and writing the same attachment in one subpass");
+			s->input[s->inputCount++] = (int32_t)a;
+		}
+		int32_t used[2 + VKV_MAX_INPUTS], nu = 0;
+		used[nu++] = s->color;
+		used[nu++] = s->depth;
+		for (uint32_t k = 0; k < s->inputCount; k++) used[nu++] = s->input[k];
+		for (int32_t k = 0; k < nu; k++) {
+			if (used[k] < 0 || used[k] >= 8) continue;
+			if (rp->firstUse[used[k]] < 0) rp->firstUse[used[k]] = (int8_t)i;
+			rp->lastUse[used[k]] = (int8_t)i;
+		}
+		/* a subpass keeps the scene of the one before when it renders to the same
+		 * attachments and reads none of them back */
+		s->newScene = i == 0 || s->color != rp->sub[i - 1].color || s->depth != rp->sub[i - 1].depth || s->inputCount;
+	}
+	for (int32_t i = (int32_t)rp->subpassCount - 1; i >= 0; i--) {
+		bool last = i + 1 == (int32_t)rp->subpassCount || rp->sub[i + 1].newScene;
+		rp->sub[i].runEnd = last ? (uint32_t)i : rp->sub[i + 1].runEnd;
+	}
+	rp->colorIndex = rp->sub[0].color;
+	rp->depthIndex = rp->sub[0].depth;
 	*pOut = VKV_H(VkRenderPass, rp);
 	return VK_SUCCESS;
 }
@@ -554,6 +615,9 @@ VkResult vkv_create_pipeline(struct VkDevice_T *dev, const VkGraphicsPipelineCre
 	p->device = dev;
 	p->layout = VKV_ND(VkvPipelineLayout, ci->layout);
 	p->rp = VKV_ND(VkvRenderPass, ci->renderPass);
+	p->subpass = p->rp && ci->subpass < p->rp->subpassCount ? ci->subpass : 0;
+	if (p->rp && ci->subpass >= p->rp->subpassCount) VKV_WARN("pipeline uses subpass %u of a render pass with %u",
+	                                                         (unsigned)ci->subpass, (unsigned)p->rp->subpassCount);
 	snprintf(p->vname, sizeof(p->vname), "%s", vmod->name);
 	snprintf(p->fname, sizeof(p->fname), "%s", fmod->name);
 
@@ -635,8 +699,8 @@ VkResult vkv_create_pipeline(struct VkDevice_T *dev, const VkGraphicsPipelineCre
 
 	/* --- fragment program (output format + blending) ---------------------- */
 	SceGxmOutputRegisterFormat outFmt = SCE_GXM_OUTPUT_REGISTER_FORMAT_UCHAR4;
-	if (p->rp && p->rp->colorIndex >= 0) {
-		const VkvFormatInfo *fi = vkv_format(p->rp->att[p->rp->colorIndex].format);
+	if (p->rp && p->rp->sub[p->subpass].color >= 0) {
+		const VkvFormatInfo *fi = vkv_format(p->rp->att[p->rp->sub[p->subpass].color].format);
 		if (fi) outFmt = fi->outReg;
 	}
 	SceGxmBlendInfo blend;
@@ -753,7 +817,7 @@ VkResult vkv_create_pipeline(struct VkDevice_T *dev, const VkGraphicsPipelineCre
 
 	/* --- depth / stencil -------------------------------------------------- */
 	const VkPipelineDepthStencilStateCreateInfo *ds = ci->pDepthStencilState;
-	bool hasDepth = p->rp && p->rp->depthIndex >= 0;
+	bool hasDepth = p->rp && p->rp->sub[p->subpass].depth >= 0;
 	p->depthFunc = SCE_GXM_DEPTH_FUNC_ALWAYS;
 	p->depthWrite = SCE_GXM_DEPTH_WRITE_DISABLED;
 	if (ds && hasDepth && ds->depthTestEnable) {

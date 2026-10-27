@@ -643,7 +643,23 @@ int vkv_spirv_translate(const uint32_t *words, size_t wordCount, VkvSpirvStage s
 	char *cg = NULL;
 	SpvExecutionModel want = stage == VKV_SPIRV_VERTEX ? SpvExecutionModelVertex : SpvExecutionModelFragment;
 
-	if (spvc_context_create(&ctx) != SPVC_SUCCESS) { free(t); return -1; }
+	uint32_t *lowered = NULL;
+	size_t loweredCount = 0;
+	if (stage == VKV_SPIRV_FRAGMENT) {
+		int lr = vkv_spirv_lower_subpass(words, wordCount, &lowered, &loweredCount);
+		if (lr < 0) {
+			logf_(&c, VKV_SPIRV_LOG_ERROR, "malformed SPIR-V module");
+			free(t);
+			return -1;
+		}
+		if (lr > 0) {
+			logf_(&c, VKV_SPIRV_LOG_INFO, "subpass inputs are read as textures at the current pixel");
+			words = lowered;
+			wordCount = loweredCount;
+		}
+	}
+
+	if (spvc_context_create(&ctx) != SPVC_SUCCESS) { free(lowered); free(t); return -1; }
 	spvc_context_set_error_callback(ctx, spvc_error_cb, &c);
 	if (spvc_context_parse_spirv(ctx, (const SpvId *)words, wordCount, &ir) != SPVC_SUCCESS) goto done;
 	if (spvc_context_create_compiler(ctx, SPVC_BACKEND_HLSL, ir, SPVC_CAPTURE_MODE_TAKE_OWNERSHIP, &comp) != SPVC_SUCCESS)
@@ -697,6 +713,7 @@ done:
 	free(t->intInit.p);
 	free(t);
 	if (ctx) spvc_context_destroy(ctx);
+	free(lowered);
 	return out->cg ? 0 : -1;
 }
 

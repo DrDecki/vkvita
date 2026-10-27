@@ -14,6 +14,10 @@ extern "C" {
 
 #define VKV_SPIRV_MAGIC 0x07230203u
 
+/* Descriptor set of the uniform block VkVita adds for lowered subpass inputs.
+ * It holds one float2, 1 / framebuffer size, and is filled while drawing. */
+#define VKV_SPIRV_INTERNAL_SET 31
+
 typedef enum VkvSpirvStage { VKV_SPIRV_VERTEX = 0, VKV_SPIRV_FRAGMENT = 1 } VkvSpirvStage;
 
 typedef enum VkvSpirvScalar { VKV_SPIRV_FLOAT = 0, VKV_SPIRV_INT = 1, VKV_SPIRV_UINT = 2 } VkvSpirvScalar;
@@ -51,6 +55,11 @@ typedef void (*VkvSpirvLogFn)(VkvSpirvLogLevel level, const char *msg, void *use
 int  vkv_spirv_translate(const uint32_t *words, size_t wordCount, VkvSpirvStage stage, VkvSpirvLogFn log, void *user,
                          VkvSpirvResult *out);
 void vkv_spirv_free(VkvSpirvResult *r);
+
+/* Rewrites subpass inputs into textures sampled at the current pixel.
+ * Returns 1 and a malloc'ed module when something changed, 0 when the module
+ * has no subpass inputs and -1 on malformed input. */
+int vkv_spirv_lower_subpass(const uint32_t *words, size_t wordCount, uint32_t **outWords, size_t *outCount);
 
 #ifdef __cplusplus
 }

@@ -90,6 +90,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkBeginCommandBuffer(VkCommandBuffer cb, const Vk
 	if (cb->secondary && bi && (bi->flags & VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT) && bi->pInheritanceInfo) {
 		cb->inRenderPass = true;
 		cb->rp = VKV_ND(VkvRenderPass, bi->pInheritanceInfo->renderPass);
+		cb->subpass = bi->pInheritanceInfo->subpass;
 	}
 	return VK_SUCCESS;
 }
@@ -153,12 +154,17 @@ VKAPI_ATTR void VKAPI_CALL vkCmdBeginRenderPass(VkCommandBuffer cb, const VkRend
 	for (uint32_t i = 0; i < c->clearCount; i++) c->clears[i] = bi->pClearValues[i];
 	cb->inRenderPass = true;
 	cb->rp = rp;
+	cb->subpass = 0;
 	cb->sceneCount++;
 }
 
 VKAPI_ATTR void VKAPI_CALL vkCmdNextSubpass(VkCommandBuffer cb, VkSubpassContents contents) {
-	(void)cb; (void)contents;
-	VKV_UNSUPPORTED("vkCmdNextSubpass (render passes have one subpass)");
+	VKV_TRACE("vkCmdNextSubpass");
+	(void)contents;
+	if (VKV_CHECK(cb->inRenderPass && cb->rp, "vkCmdNextSubpass outside a render pass")) return;
+	if (VKV_CHECK(cb->subpass + 1 < cb->rp->subpassCount, "vkCmdNextSubpass past the last subpass")) return;
+	VKV_CMD(cb, VkvCmd, VKV_CMD_NEXT_SUBPASS);
+	cb->subpass++;
 }
 
 VKAPI_ATTR void VKAPI_CALL vkCmdEndRenderPass(VkCommandBuffer cb) {
@@ -297,9 +303,11 @@ static bool vkv_draw_checks(VkCommandBuffer cb, const char *fn) {
 	if (!vkv_validate()) return true;
 	if (!cb->inRenderPass) { vkv_fail(fn, "draw outside a render pass"); return false; }
 	if (!cb->pipeline) { vkv_fail(fn, "draw without a bound pipeline"); return false; }
-	if (cb->pipeline->rp && cb->rp && cb->pipeline->rp->colorIndex >= 0 && cb->rp->colorIndex >= 0) {
-		VkFormat a = cb->pipeline->rp->att[cb->pipeline->rp->colorIndex].format;
-		VkFormat b = cb->rp->att[cb->rp->colorIndex].format;
+	const VkvRenderPass *prp = cb->pipeline->rp, *crp = cb->rp;
+	if (prp && crp && cb->subpass < crp->subpassCount && prp->sub[cb->pipeline->subpass].color >= 0 &&
+	    crp->sub[cb->subpass].color >= 0) {
+		VkFormat a = prp->att[prp->sub[cb->pipeline->subpass].color].format;
+		VkFormat b = crp->att[crp->sub[cb->subpass].color].format;
 		if (vkv_format(a) && vkv_format(b) && vkv_format(a)->outReg != vkv_format(b)->outReg) {
 			vkv_fail(fn, "pipeline was created for an incompatible render pass color format");
 			return false;

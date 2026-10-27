@@ -15,6 +15,9 @@ typedef struct VkvReplay {
 	bool                      inScene;
 	VkvRenderPass            *rp;
 	VkvFramebuffer           *fb;
+	const struct VkvCmdBeginRP *begin;
+	uint32_t                  subpass;
+	float                     fbInv[4] __attribute__((aligned(16))); /* 1 / framebuffer size */
 	VkvImage                 *colorImg, *depthImg;
 	VkvImageView             *colorView;
 	SceGxmColorSurface        color;
@@ -113,6 +116,18 @@ static void vkv_clear_color_rect(VkvReplay *R, VkvImage *img, uint32_t level, ui
 	uint32_t pitch = img->levelPitch[level];
 	g_vkv.cur.clears++;
 
+	/* Transfers only wait for scenes that render into the image, not for scenes
+	 * that still sample it, so a clear right after such a scene would overwrite
+	 * pixels it has not read yet. */
+	if (img->readSerial && R->dev->gpuBusy && !vkv_serial_done(R->dev, img->readSerial)) {
+		static bool s_told;
+		if (!s_told) {
+			s_told = true;
+			VKV_INFO("clearing an image the GPU is still sampling waits for the GPU first");
+		}
+		vkv_device_wait_gpu(R->dev);
+	}
+
 	static bool s_fillBroken;
 	if (!vkv_compat(VKV_COMPAT_CPU_CLEAR) && !s_fillBroken && img->sync && bpp == 4 && !img->swizzled) {
 		uint32_t value = 0;
@@ -162,7 +177,8 @@ static void vkv_begin_scene(VkvReplay *R, bool loadDepth, bool clearDepth, float
 		R->depthImg->pendingDepthClear = false;
 	}
 	if (R->depthImg) {
-		const VkvAttachmentDesc *a = &rp->att[rp->depthIndex];
+		const VkvSubpass *sp = &rp->sub[R->subpass];
+		const VkvAttachmentDesc *a = &rp->att[sp->depth];
 		sceGxmDepthStencilSurfaceInit(&R->depth, SCE_GXM_DEPTH_STENCIL_FORMAT_S8D24, SCE_GXM_DEPTH_STENCIL_SURFACE_TILED,
 		                              R->depthImg->alignedW, R->depthImg->ptr, NULL);
 		if (clearDepth) {
@@ -171,8 +187,9 @@ static void vkv_begin_scene(VkvReplay *R, bool loadDepth, bool clearDepth, float
 		}
 		sceGxmDepthStencilSurfaceSetForceLoadMode(&R->depth, loadDepth ? SCE_GXM_DEPTH_STENCIL_FORCE_LOAD_ENABLED
 		                                                                : SCE_GXM_DEPTH_STENCIL_FORCE_LOAD_DISABLED);
-		bool store = R->splits || a->storeOp == VK_ATTACHMENT_STORE_OP_STORE ||
-		             a->stencilStoreOp == VK_ATTACHMENT_STORE_OP_STORE;
+		/* later subpasses in another scene need the depth buffer too */
+		bool store = R->splits || rp->lastUse[sp->depth] > (int8_t)sp->runEnd ||
+		             a->storeOp == VK_ATTACHMENT_STORE_OP_STORE || a->stencilStoreOp == VK_ATTACHMENT_STORE_OP_STORE;
 		sceGxmDepthStencilSurfaceSetForceStoreMode(&R->depth, store ? SCE_GXM_DEPTH_STENCIL_FORCE_STORE_ENABLED
 		                                                            : SCE_GXM_DEPTH_STENCIL_FORCE_STORE_DISABLED);
 	}
@@ -229,46 +246,74 @@ static void vkv_end_scene(VkvReplay *R, bool final) {
 static bool vkv_pass_has_splits(const uint8_t *p, const uint8_t *end) {
 	while (p < end) {
 		const VkvCmd *c = (const VkvCmd *)p;
-		if (c->type == VKV_CMD_END_RP) return false;
+		if (c->type == VKV_CMD_END_RP || c->type == VKV_CMD_NEXT_SUBPASS) return false;
 		if (c->type == VKV_CMD_CLEAR_ATTACH) return true;
 		p += c->size;
 	}
 	return false;
 }
 
-static void vkv_exec_begin_rp(VkvReplay *R, const VkvCmdBeginRP *c, const uint8_t *next, const uint8_t *end) {
-	VkvRenderPass *rp = c->rp;
-	VkvFramebuffer *fb = c->fb;
-	R->rp = rp;
-	R->fb = fb;
-	R->colorView = rp->colorIndex >= 0 ? fb->views[rp->colorIndex] : NULL;
+/* Starts the scene of one subpass. Load and clear ops apply where an
+ * attachment is first used, everything later loads what came before. */
+static void vkv_start_subpass(VkvReplay *R, uint32_t idx, const uint8_t *next, const uint8_t *end) {
+	VkvRenderPass *rp = R->rp;
+	VkvFramebuffer *fb = R->fb;
+	const VkvCmdBeginRP *c = R->begin;
+	const VkvSubpass *sp = &rp->sub[idx];
+	R->subpass = idx;
+	R->colorView = sp->color >= 0 ? fb->views[sp->color] : NULL;
 	R->colorImg = R->colorView ? R->colorView->image : NULL;
-	R->depthImg = rp->depthIndex >= 0 ? fb->views[rp->depthIndex]->image : NULL;
+	R->depthImg = sp->depth >= 0 ? fb->views[sp->depth]->image : NULL;
 	R->splits = vkv_pass_has_splits(next, end);
 
-	if (R->colorImg) {
-		const VkvAttachmentDesc *a = &rp->att[rp->colorIndex];
-		if (a->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR && (uint32_t)rp->colorIndex < c->clearCount)
+	if (R->colorImg && rp->firstUse[sp->color] == (int8_t)idx) {
+		const VkvAttachmentDesc *a = &rp->att[sp->color];
+		if (a->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR && (uint32_t)sp->color < c->clearCount)
 			vkv_clear_color_rect(R, R->colorImg, R->colorView->baseLevel, R->colorView->baseLayer,
-			                     &c->clears[rp->colorIndex].color, (uint32_t)c->area.offset.x,
+			                     &c->clears[sp->color].color, (uint32_t)c->area.offset.x,
 			                     (uint32_t)c->area.offset.y, c->area.extent.width, c->area.extent.height);
 	}
 	bool loadDepth = false, clearDepth = false;
 	float d = 1.0f;
 	uint32_t s = 0;
 	if (R->depthImg) {
-		const VkvAttachmentDesc *a = &rp->att[rp->depthIndex];
-		loadDepth = a->loadOp == VK_ATTACHMENT_LOAD_OP_LOAD && R->depthImg->written;
-		if (a->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR && (uint32_t)rp->depthIndex < c->clearCount) {
-			clearDepth = true;
-			d = c->clears[rp->depthIndex].depthStencil.depth;
-			s = c->clears[rp->depthIndex].depthStencil.stencil;
+		const VkvAttachmentDesc *a = &rp->att[sp->depth];
+		if (rp->firstUse[sp->depth] != (int8_t)idx) {
+			loadDepth = true;
+		} else {
+			loadDepth = a->loadOp == VK_ATTACHMENT_LOAD_OP_LOAD && R->depthImg->written;
+			if (a->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR && (uint32_t)sp->depth < c->clearCount) {
+				clearDepth = true;
+				d = c->clears[sp->depth].depthStencil.depth;
+				s = c->clears[sp->depth].depthStencil.stencil;
+			}
 		}
 	}
+	vkv_begin_scene(R, loadDepth, clearDepth, d, s);
+}
+
+static void vkv_exec_begin_rp(VkvReplay *R, const VkvCmdBeginRP *c, const uint8_t *next, const uint8_t *end) {
+	VkvFramebuffer *fb = c->fb;
+	R->rp = c->rp;
+	R->fb = fb;
+	R->begin = c;
+	R->fbInv[0] = 1.0f / (float)fb->width;
+	R->fbInv[1] = 1.0f / (float)fb->height;
 	if (vkv_validate() && (c->area.offset.x || c->area.offset.y || c->area.extent.width != fb->width ||
 	                       c->area.extent.height != fb->height))
 		VKV_UNSUPPORTED("partial render areas (whole framebuffer is rendered)");
-	vkv_begin_scene(R, loadDepth, clearDepth, d, s);
+	vkv_start_subpass(R, 0, next, end);
+}
+
+static void vkv_exec_next_subpass(VkvReplay *R, const uint8_t *next, const uint8_t *end) {
+	if (!R->rp || R->subpass + 1 >= R->rp->subpassCount) return;
+	uint32_t n = R->subpass + 1;
+	if (!R->rp->sub[n].newScene) {
+		R->subpass = n;
+		return;
+	}
+	vkv_end_scene(R, false);
+	vkv_start_subpass(R, n, next, end);
 }
 
 static void vkv_exec_clear_attachments(VkvReplay *R, const VkvCmdClearAttach *c) {
@@ -409,6 +454,11 @@ static void vkv_apply_viewport(VkvReplay *R, const VkvPipeline *p) {
 }
 
 static const uint8_t *vkv_uniform_buffer_data(VkvReplay *R, int set, uint32_t binding, uint32_t *range) {
+	if (set == VKV_INTERNAL_SET) {
+		(void)binding;
+		*range = sizeof(R->fbInv);
+		return (const uint8_t *)R->fbInv;
+	}
 	if (set < 0 || set >= VKV_MAX_SETS || !R->sets[set]) return NULL;
 	VkvSet *s = R->sets[set];
 	for (uint32_t b = 0; b < s->layout->bindingCount; b++) {
@@ -483,7 +533,8 @@ static VkvDescriptor *vkv_find_descriptor(VkvReplay *R, int set, uint32_t bindin
 static bool vkv_resolve_texture(VkvReplay *R, const VkvTexBinding *t, SceGxmTexture *out) {
 	VkvDescriptor *img = vkv_find_descriptor(R, t->imageSet, t->imageBinding);
 	if (!img || !img->valid) return false;
-	if (img->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
+	if (img->view) img->view->image->readSerial = R->dev->sceneSerial + 1; /* the scene being recorded */
+	if (img->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER || img->type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT) {
 		*out = img->tex;
 		return true;
 	}
@@ -520,6 +571,7 @@ static void vkv_bind_resources(VkvReplay *R, const VkvPipeline *p) {
 					boundBuffers |= 1u << slot;
 				} else if (legacyTex && d->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
 					if (slot >= SCE_GXM_MAX_TEXTURE_UNITS) continue;
+					if (d->view) d->view->image->readSerial = R->dev->sceneSerial + 1;
 					if (!p->texExplicit[VKV_STAGE_FRAGMENT]) sceGxmSetFragmentTexture(ctx, slot, &d->tex);
 					if (!p->texExplicit[VKV_STAGE_VERTEX] && (p->vSamplerMask & (1u << slot)))
 						sceGxmSetVertexTexture(ctx, slot, &d->tex);
@@ -875,7 +927,7 @@ static const char *vkv_cmd_name(uint16_t t) {
 		"SetStencil", "Draw", "DrawIndexed", "CopyBuffer", "CopyBufferToImage", "CopyImageToBuffer",
 		"UpdateBuffer", "FillBuffer", "ClearAttachments", "ClearColorImage", "Barrier", "FixedFunctionDraw",
 		"CopyImage", "BlitImage", "ClearDepthStencilImage", "DrawIndirect", "ExecuteCommands", "SetLineWidth",
-		"BeginQuery", "EndQuery", "ResetQueryPool", "WriteTimestamp", "SetEvent" };
+		"BeginQuery", "EndQuery", "ResetQueryPool", "WriteTimestamp", "SetEvent", "NextSubpass" };
 	return t < sizeof(names) / sizeof(names[0]) ? names[t] : "?";
 }
 
@@ -888,6 +940,9 @@ static void vkv_replay(VkvReplay *R, struct VkCommandBuffer_T *cb) {
 		switch ((VkvCmdType)h->type) {
 		case VKV_CMD_BEGIN_RP:
 			vkv_exec_begin_rp(R, (const VkvCmdBeginRP *)h, next, end);
+			break;
+		case VKV_CMD_NEXT_SUBPASS:
+			vkv_exec_next_subpass(R, next, end);
 			break;
 		case VKV_CMD_END_RP:
 			vkv_end_scene(R, true);
