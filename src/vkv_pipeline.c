@@ -612,11 +612,37 @@ static uint32_t vkv_push_base(const VkvPipelineLayout *l, VkShaderStageFlags sta
 	return 0;
 }
 
+SceGxmFragmentProgram *vkv_pipeline_scissor_program(struct VkDevice_T *dev, VkvPipeline *p) {
+	if (p->scissorState) return p->scissorState > 0 ? p->fpScissor : NULL;
+	p->scissorState = -1;
+	const SceGxmProgram *prog;
+	SceGxmShaderPatcherId pid;
+	if (!p->fmod || !vkv_shader_get_scissor_program(dev, p->fmod, &prog, &pid)) return NULL;
+	if (sceGxmShaderPatcherCreateFragmentProgram(dev->patcher, pid, p->outFmt, vkv_gxm_multisample(p->samples),
+	                                             p->hasBlend ? &p->blend : NULL, p->vprog, &p->fpScissor) < 0) {
+		p->fpScissor = NULL;
+		return NULL;
+	}
+	p->funiScissor = malloc(VKV_MAX_UNIFORM_MAP * sizeof(VkvUniformMap));
+	if (!p->funiScissor) {
+		sceGxmShaderPatcherReleaseFragmentProgram(dev->patcher, p->fpScissor);
+		p->fpScissor = NULL;
+		return NULL;
+	}
+	p->funiScissorCount = vkv_build_uniform_map(p->fmod, prog, vkv_push_base(p->layout, VK_SHADER_STAGE_FRAGMENT_BIT),
+	                                            p->funiScissor, VKV_MAX_UNIFORM_MAP);
+	p->fDefaultSizeScissor = sceGxmProgramGetDefaultUniformBufferSize(prog);
+	p->scissorState = 1;
+	return p->fpScissor;
+}
+
 void vkv_destroy_pipeline(struct VkDevice_T *dev, VkvPipeline *p) {
 	if (!p) return;
 	if (p->vp[0]) sceGxmShaderPatcherReleaseVertexProgram(dev->patcher, p->vp[0]);
 	if (p->vp[1]) sceGxmShaderPatcherReleaseVertexProgram(dev->patcher, p->vp[1]);
 	if (p->fp) sceGxmShaderPatcherReleaseFragmentProgram(dev->patcher, p->fp);
+	if (p->fpScissor) sceGxmShaderPatcherReleaseFragmentProgram(dev->patcher, p->fpScissor);
+	free(p->funiScissor);
 	if (p->vmod) vkv_shader_release(p->vmod);
 	if (p->fmod) vkv_shader_release(p->fmod);
 	p->obj.magic = VKV_MAGIC_DEAD;
@@ -779,6 +805,9 @@ VkResult vkv_create_pipeline(struct VkDevice_T *dev, const VkGraphicsPipelineCre
 	if (ms && ms->alphaToCoverageEnable) VKV_UNSUPPORTED("alpha to coverage");
 	if (ms && ms->pSampleMask && (ms->pSampleMask[0] & ((1u << p->samples) - 1)) != ((1u << p->samples) - 1))
 		VKV_UNSUPPORTED("sample masks");
+	p->outFmt = outFmt;
+	p->hasBlend = blendPtr != NULL;
+	if (blendPtr) p->blend = *blendPtr;
 	int r = sceGxmShaderPatcherCreateFragmentProgram(dev->patcher, p->fpid, outFmt, vkv_gxm_multisample(p->samples),
 	                                                 blendPtr, p->vprog, &p->fp);
 	if (r < 0) {

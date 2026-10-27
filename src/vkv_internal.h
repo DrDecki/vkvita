@@ -268,7 +268,18 @@ struct VkDevice_T {
 	VkvGpuBlock           visBuf;
 	bool                  visBufSet;
 	uint8_t               visUsed[VKV_VIS_SLOTS];
+
+	/* vkCmdClearAttachments draws a quad in the scene with these */
+	int                   clearState;     /* 0 not tried, 1 ready, -1 not available */
+	SceGxmProgram        *clearProg[2];
+	SceGxmShaderPatcherId clearId[2];
+	SceGxmVertexProgram  *clearVp;
+	const SceGxmProgramParameter *clearRect, *clearDepth, *clearColor;
+	struct { uint32_t key; SceGxmFragmentProgram *fp; } clearFp[16];
+	uint32_t              clearFpCount;
 };
+
+void vkv_clear_programs_free(struct VkDevice_T *d);
 
 #define VKV_GPU_CORES 4
 
@@ -424,6 +435,10 @@ typedef struct VkShaderModule_T {
 	bool                      progOwned[VKV_STAGE_COUNT];
 	SceGxmShaderPatcherId     pid[VKV_STAGE_COUNT];
 	bool                      registered[VKV_STAGE_COUNT];
+	/* SPIR-V fragment shaders: a second program that discards outside the scissor */
+	SceGxmProgram            *scissorProg;
+	SceGxmShaderPatcherId     scissorPid;
+	int                       scissorState;  /* 0 not tried, 1 ready, -1 not available */
 	struct VkDevice_T        *device;
 	uint32_t                  refs;      /* pipelines using this module */
 	bool                      destroyed; /* vkDestroyShaderModule was called */
@@ -438,6 +453,8 @@ void vkv_shader_release(VkvShaderModule *m);
 
 VkResult vkv_shader_get_program(struct VkDevice_T *dev, VkvShaderModule *m, VkvStage stage,
                                 const SceGxmProgram **prog, SceGxmShaderPatcherId *pid);
+bool     vkv_shader_get_scissor_program(struct VkDevice_T *dev, VkvShaderModule *m, const SceGxmProgram **prog,
+                                        SceGxmShaderPatcherId *pid);
 void     vkv_shader_log_program(const char *name, const SceGxmProgram *p);
 /* True for the INDEX / INSTANCE inputs of translated SPIR-V, which GXM fills
  * itself and which never take a vertex attribute. */
@@ -579,6 +596,15 @@ typedef struct VkPipeline_T {
 	VkvUniformMap             funi[VKV_MAX_UNIFORM_MAP];
 	uint32_t                  funiCount;
 	uint32_t                  vDefaultSize, fDefaultSize;
+
+	/* the scissor variant of the fragment program, made the first time a draw needs it */
+	SceGxmOutputRegisterFormat outFmt;
+	SceGxmBlendInfo           blend;
+	bool                      hasBlend;
+	int                       scissorState;  /* 0 not tried, 1 ready, -1 not available */
+	SceGxmFragmentProgram    *fpScissor;
+	VkvUniformMap            *funiScissor;
+	uint32_t                  funiScissorCount, fDefaultSizeScissor;
 
 	/* reflection for validation */
 	uint32_t                  fSamplerMask, vSamplerMask, bufferMask;
@@ -804,6 +830,7 @@ bool     vkv_view_build_texture(VkvImageView *v);
 /* Pipeline creation used by the FF layer */
 VkResult vkv_create_pipeline(struct VkDevice_T *dev, const VkGraphicsPipelineCreateInfo *ci, VkvPipeline **out);
 void     vkv_destroy_pipeline(struct VkDevice_T *dev, VkvPipeline *p);
+SceGxmFragmentProgram *vkv_pipeline_scissor_program(struct VkDevice_T *dev, VkvPipeline *p);
 
 /* Memory type indices exposed to the application */
 enum { VKV_MEMTYPE_CDRAM = 0, VKV_MEMTYPE_RAM = 1, VKV_MEMTYPE_COUNT = 2 };

@@ -59,6 +59,9 @@ int  vkv_spirv_translate(const uint32_t *words, size_t wordCount, VkvSpirvStage 
                          VkvSpirvResult *out);
 /* Elements given to runtime arrays in read-only storage buffers (default 64). */
 void vkv_spirv_set_storage_array_size(uint32_t elements);
+/* The next fragment translation discards pixels outside vkv_scissor, a float4
+ * (x0, y0, x1, y1) in pixels fed from binding 1 of VKV_SPIRV_INTERNAL_SET. */
+void vkv_spirv_set_scissor_variant(int enabled);
 void vkv_spirv_free(VkvSpirvResult *r);
 
 /* Rewrites subpass inputs into textures sampled at the current pixel.

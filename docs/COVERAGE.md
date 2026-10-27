@@ -54,9 +54,9 @@ RGBA16F, RG16F, R16F, R32F. Compressed formats must be power-of-two sized.
 | `vkCmdBegin/EndRenderPass` | partial | Render area is always the whole framebuffer |
 | `vkCmdBindPipeline/VertexBuffers/IndexBuffer/DescriptorSets`, `vkCmdPushConstants` | full | 16-bit and 32-bit indices, 128 bytes of push constants |
 | `vkCmdDraw`, `vkCmdDrawIndexed` | full | Instancing is emulated: one GXM draw per instance, per-instance bindings advance per draw |
-| `vkCmdSetViewport/Scissor/DepthBias/Stencil*` | partial | Scissor uses GXM region clip, which works on 32x32 pixel tiles (see below) |
+| `vkCmdSetViewport/Scissor/DepthBias/Stencil*` | full | Scissor is pixel exact for SPIR-V shaders, tile granular for Cg shaders (see below) |
 | `vkCmdCopyBuffer/BufferToImage/ImageToBuffer`, `vkCmdUpdateBuffer`, `vkCmdFillBuffer` | full | Executed by the CPU at submit, after a GPU wait if needed. Level 0 only |
-| `vkCmdClearAttachments` | partial | Splits the GXM scene. Color rects are exact; depth/stencil clears always cover the whole attachment |
+| `vkCmdClearAttachments` | full | Draws a quad per rectangle inside the scene, so color, depth and stencil rectangles are exact and the scene is not split. Without the Cg compiler and shader cache it falls back to splitting the scene, where depth/stencil clears cover the whole attachment |
 | `vkCmdClearColorImage` | full | Outside render passes |
 | `vkCmdPipelineBarrier` | full | Layout transitions are no-ops; GPU-to-transfer/host barriers wait for the GPU |
 | `vkCmdDrawIndirect`, `vkCmdDrawIndexedIndirect` | full | The parameters are read from the buffer when the command buffer is submitted |
@@ -95,10 +95,12 @@ multisampled image (`sampler2DMS`, `subpassLoad` of a multisampled input).
 ## Known gaps that matter for ports
 
 - **Mipmaps need power-of-two sizes.** Other sizes keep level 0 only.
-- **Scissor is tile granular.** GXM region clipping drops whole 32x32 tiles,
-  so a scissor that is not tile aligned clips too little (a warning is
-  logged once). UI code that clips text with scissor will show overdraw.
-  Pixel-exact scissor needs a stencil/mask pass and is on the to-do list.
+- **Scissor between tiles costs a shader variant.** GXM region clipping
+  works on 32x32 tiles. When a scissor does not line up with them, SPIR-V
+  pipelines switch to a second fragment program that discards the pixels
+  outside the rectangle; it is built the first time a draw needs it. Hand
+  written Cg shaders cannot get that variant and keep the tile granular
+  clip (a warning is logged once).
 - **One color attachment per subpass.** GXM has a single color output, so
   MRT is not available. Subpasses work, but every subpass that reads an input
   attachment ends the scene before it and reads the result back from memory,

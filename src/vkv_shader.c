@@ -329,12 +329,16 @@ static void vkv_log_source(const char *name, const char *src) {
 	}
 }
 
-static SceGxmProgram *vkv_spirv_compile(struct VkDevice_T *dev, VkvShaderModule *m, VkvStage stage, uint32_t *size) {
+static SceGxmProgram *vkv_spirv_compile(struct VkDevice_T *dev, VkvShaderModule *m, VkvStage stage, uint32_t *size,
+                                        bool scissor) {
 	VkvSpirvResult r;
 	uint64_t t0 = vkv_time_us();
 	vkv_spirv_set_storage_array_size(g_vkv.cfg.storageArraySize);
-	if (vkv_spirv_translate((const uint32_t *)m->code, m->codeSize / 4,
-	                        stage == VKV_STAGE_VERTEX ? VKV_SPIRV_VERTEX : VKV_SPIRV_FRAGMENT, vkv_spirv_log, m, &r) != 0) {
+	vkv_spirv_set_scissor_variant(scissor);
+	int tr = vkv_spirv_translate((const uint32_t *)m->code, m->codeSize / 4,
+	                             stage == VKV_STAGE_VERTEX ? VKV_SPIRV_VERTEX : VKV_SPIRV_FRAGMENT, vkv_spirv_log, m, &r);
+	vkv_spirv_set_scissor_variant(0);
+	if (tr != 0) {
 		VKV_ERROR("shader '%s': SPIR-V to Cg translation of the %s stage failed (see messages above)", m->name,
 		          k_stageNames[stage]);
 		return NULL;
@@ -349,7 +353,8 @@ static SceGxmProgram *vkv_spirv_compile(struct VkDevice_T *dev, VkvShaderModule 
 		ok = vkv_shader_add_uniform(m, r.unis[i].name, r.unis[i].offset, (int8_t)r.unis[i].set,
 		                            (uint8_t)r.unis[i].binding, (uint8_t)r.unis[i].scalar,
 		                            (uint16_t)VKV_MIN(r.unis[i].stride, 65535u));
-	if (ok && r.texCount) {
+	/* the scissor variant has the same textures, the table is already there */
+	if (ok && r.texCount && !scissor) {
 		m->texb[stage] = malloc(r.texCount * sizeof(VkvTexBinding));
 		ok = m->texb[stage] != NULL;
 		for (uint32_t i = 0; ok && i < r.texCount; i++) {
@@ -364,7 +369,8 @@ static SceGxmProgram *vkv_spirv_compile(struct VkDevice_T *dev, VkvShaderModule 
 		if (ok) m->texCount[stage] = r.texCount;
 	}
 	m->texExplicit[stage] = true;
-	SceGxmProgram *p = ok ? vkv_shark_compile(dev, r.cg, stage, m->name, m->hash, size) : NULL;
+	SceGxmProgram *p = ok ? vkv_shark_compile(dev, r.cg, stage, m->name, scissor ? m->hash ^ 0x5C155012u : m->hash, size)
+	                      : NULL;
 	vkv_spirv_free(&r);
 	return p;
 }
@@ -373,6 +379,33 @@ static SceGxmProgram *vkv_spirv_compile(struct VkDevice_T *dev, VkvShaderModule 
 /* ------------------------------------------------------------------------ */
 /* Module objects                                                           */
 /* ------------------------------------------------------------------------ */
+/* The fragment program that discards pixels outside the scissor rectangle;
+ * only SPIR-V shaders can have one, since VkVita writes their Cg. */
+bool vkv_shader_get_scissor_program(struct VkDevice_T *dev, VkvShaderModule *m, const SceGxmProgram **prog,
+                                    SceGxmShaderPatcherId *pid) {
+	if (!m->scissorState) {
+		m->scissorState = -1;
+#if VKV_WITH_SPIRV
+		if (m->source == VKV_SHADER_SOURCE_SPIRV) {
+			uint32_t size = 0;
+			m->scissorProg = vkv_spirv_compile(dev, m, VKV_STAGE_FRAGMENT, &size, true);
+			if (m->scissorProg && sceGxmShaderPatcherRegisterProgram(dev->patcher, m->scissorProg, &m->scissorPid) >= 0)
+				m->scissorState = 1;
+			else {
+				free(m->scissorProg);
+				m->scissorProg = NULL;
+			}
+		}
+#else
+		(void)dev;
+#endif
+	}
+	if (m->scissorState < 0) return false;
+	*prog = m->scissorProg;
+	*pid = m->scissorPid;
+	return true;
+}
+
 VkResult vkv_shader_get_program(struct VkDevice_T *dev, VkvShaderModule *m, VkvStage stage,
                                 const SceGxmProgram **prog, SceGxmShaderPatcherId *pid) {
 	if (!m->prog[stage]) {
@@ -393,7 +426,7 @@ VkResult vkv_shader_get_program(struct VkDevice_T *dev, VkvShaderModule *m, VkvS
 		} else if (m->source == VKV_SHADER_SOURCE_SPIRV) {
 #if VKV_WITH_SPIRV
 			uint32_t size = 0;
-			SceGxmProgram *p = vkv_spirv_compile(dev, m, stage, &size);
+			SceGxmProgram *p = vkv_spirv_compile(dev, m, stage, &size, false);
 			if (!p) return VK_ERROR_INVALID_SHADER_NV;
 			m->prog[stage] = p;
 			m->progOwned[stage] = true;
@@ -519,6 +552,8 @@ void vkv_shader_release(VkvShaderModule *m) {
 			VKV_WARN("shader '%s': unregister failed", m->name);
 		if (m->progOwned[s]) free(m->prog[s]);
 	}
+	if (m->scissorState > 0) sceGxmShaderPatcherUnregisterProgram(m->device->patcher, m->scissorPid);
+	free(m->scissorProg);
 	for (uint32_t i = 0; i < m->attrCount; i++) free((void *)m->attrs[i].name);
 	for (uint32_t i = 0; i < m->uniCount; i++) free((void *)m->unis[i].name);
 	free(m->attrs);

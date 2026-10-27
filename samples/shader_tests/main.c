@@ -17,7 +17,10 @@
  *   fourth row  images: a layer of an array image, a layer that a render
  *               pass cleared, an R8 texture swizzled to (1, 1, 1, R) and an
  *               RGBA texture swizzled to BGRA
- *   fifth row   a sampler with a LOD bias of +1
+ *   fifth row   a sampler with a LOD bias of +1, drawn a second time in red
+ *               with a scissor that ends 2 pixels left of it: with a pixel
+ *               exact scissor no red shows, on 32x32 tiles the left edge
+ *               turns red
  *
  * Expected picture: seventeen green tiles.
  *
@@ -453,6 +456,13 @@ int main(void) {
 			                   &push);
 			vkCmdDraw(cb, 6, 1, 0, 0);
 		}
+		/* the last tile again in red, scissored to the 36 pixels left of it: on 32x32 tiles the
+		 * scissor would reach to x = 64 and paint the left edge of the tile red */
+		struct { int32_t tile, which; float weights[4]; float lodScale; } red = { 16, 7, { 0 }, lodScale };
+		VkRect2D left = { { 0, 0 }, { 36, s.extent.height } };
+		vkCmdSetScissor(cb, 0, 1, &left);
+		vkCmdPushConstants(cb, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(red), &red);
+		vkCmdDraw(cb, 6, 1, 0, 0);
 		sample_end_frame(&s);
 		if (++frameNo == 60) vkvLog(VKV_LOG_WARN, "shader_tests: running, seventeen green tiles expected");
 	}

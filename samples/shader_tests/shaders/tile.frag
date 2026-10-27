@@ -88,6 +88,8 @@ void main() {
     else if (pc.tile == 15) ok = near(texture(swappedTex, uv), vec4(0.0, 0.0, 1.0, 1.0));
     /* the scale makes this pick mip level 1 (green); the sampler's bias of +1 moves it to level 2 */
     else ok = near(texture(biasTex, vUv * pc.lodScale), vec4(0.0, 0.0, 1.0, 1.0));
+    /* drawn again in red with a scissor that ends left of the tile: nothing may show */
+    if (pc.which == 7) ok = false;
     /* a darker border shows the tiles apart */
     float edge = min(min(vUv.x, 1.0 - vUv.x), min(vUv.y, 1.0 - vUv.y)) < 0.04 ? 0.6 : 1.0;
     outColor = (ok ? vec4(0.1, 0.85, 0.3, 1.0) : vec4(0.9, 0.15, 0.1, 1.0)) * vec4(vec3(edge), 1.0);

@@ -18,6 +18,9 @@ typedef struct VkvReplay {
 	const struct VkvCmdBeginRP *begin;
 	uint32_t                  subpass;
 	float                     fbInv[4] __attribute__((aligned(16))); /* 1 / framebuffer size */
+	float                     scissorPx[4] __attribute__((aligned(16))); /* exact scissor x0, y0, x1, y1 */
+	bool                      exactScissor;   /* the scissor is not on 32x32 tiles */
+	bool                      fpScissorOn;    /* the scissor variant of the fragment program is set */
 	VkvImage                 *colorImg, *depthImg;
 	VkvImageView             *colorView, *depthView;
 	SceGxmColorSurface        color;
@@ -341,8 +344,159 @@ static void vkv_exec_next_subpass(VkvReplay *R, const uint8_t *next, const uint8
 	vkv_start_subpass(R, n, next, end);
 }
 
+/* ------------------------------------------------------------------------ */
+/* Clears inside a scene                                                    */
+/* ------------------------------------------------------------------------ */
+/* vkCmdClearAttachments draws a quad per rectangle with the clear color and
+ * depth, so the scene keeps going and depth and stencil rectangles are exact.
+ * The corners come from INDEX, so no vertex buffer is needed. */
+static const char k_clearVs[] =
+	"void main(int idx : INDEX, uniform float4 uRect, uniform float uDepth, float4 out vPosition : POSITION)\n"
+	"{\n"
+	"    float x = (idx == 1 || idx == 3) ? uRect.z : uRect.x;\n"
+	"    float y = (idx >= 2) ? uRect.w : uRect.y;\n"
+	"    vPosition = float4(x, y, uDepth, 1.0f);\n"
+	"}\n";
+static const char k_clearFs[] =
+	"float4 main(uniform float4 uColor) : COLOR\n"
+	"{\n"
+	"    return uColor;\n"
+	"}\n";
+
+void vkv_clear_programs_free(struct VkDevice_T *d) {
+	if (!d->patcher) return;
+	for (uint32_t i = 0; i < d->clearFpCount; i++) sceGxmShaderPatcherReleaseFragmentProgram(d->patcher, d->clearFp[i].fp);
+	d->clearFpCount = 0;
+	if (d->clearVp) sceGxmShaderPatcherReleaseVertexProgram(d->patcher, d->clearVp);
+	d->clearVp = NULL;
+	for (int s = 0; s < 2; s++) {
+		if (d->clearId[s]) sceGxmShaderPatcherUnregisterProgram(d->patcher, d->clearId[s]);
+		d->clearId[s] = NULL;
+		free(d->clearProg[s]);
+		d->clearProg[s] = NULL;
+	}
+	d->clearState = 0;
+}
+
+static bool vkv_clear_programs(struct VkDevice_T *d) {
+	if (d->clearState) return d->clearState > 0;
+	d->clearState = -1;
+	const char *src[2] = { k_clearVs, k_clearFs };
+	for (int s = 0; s < 2; s++) {
+		uint32_t size = 0;
+		d->clearProg[s] = vkv_shark_compile(d, src[s], s ? VKV_STAGE_FRAGMENT : VKV_STAGE_VERTEX,
+		                                    s ? "vkv_clear_fs" : "vkv_clear_vs", s ? 0xC1EA0F02u : 0xC1EA0F01u, &size);
+		if (!d->clearProg[s] || sceGxmShaderPatcherRegisterProgram(d->patcher, d->clearProg[s], &d->clearId[s]) < 0) {
+			VKV_INFO("clears inside render passes split the scene (no clear shaders)");
+			vkv_clear_programs_free(d);
+			d->clearState = -1;
+			return false;
+		}
+	}
+	if (sceGxmShaderPatcherCreateVertexProgram(d->patcher, d->clearId[0], NULL, 0, NULL, 0, &d->clearVp) < 0) {
+		vkv_clear_programs_free(d);
+		d->clearState = -1;
+		return false;
+	}
+	d->clearRect = sceGxmProgramFindParameterByName(d->clearProg[0], "uRect");
+	d->clearDepth = sceGxmProgramFindParameterByName(d->clearProg[0], "uDepth");
+	d->clearColor = sceGxmProgramFindParameterByName(d->clearProg[1], "uColor");
+	d->clearState = d->clearRect && d->clearDepth && d->clearColor ? 1 : -1;
+	if (d->clearState < 0) vkv_clear_programs_free(d), d->clearState = -1;
+	return d->clearState > 0;
+}
+
+static SceGxmFragmentProgram *vkv_clear_fp(struct VkDevice_T *d, SceGxmOutputRegisterFormat fmt,
+                                           SceGxmMultisampleMode ms, bool color) {
+	uint32_t key = (uint32_t)fmt | ((uint32_t)ms << 8) | (color ? 1u << 16 : 0);
+	for (uint32_t i = 0; i < d->clearFpCount; i++)
+		if (d->clearFp[i].key == key) return d->clearFp[i].fp;
+	if (d->clearFpCount == 16) return NULL;
+	SceGxmBlendInfo mask;
+	memset(&mask, 0, sizeof(mask));
+	mask.colorMask = SCE_GXM_COLOR_MASK_NONE;
+	mask.colorFunc = mask.alphaFunc = SCE_GXM_BLEND_FUNC_NONE;
+	mask.colorSrc = mask.alphaSrc = SCE_GXM_BLEND_FACTOR_ONE;
+	mask.colorDst = mask.alphaDst = SCE_GXM_BLEND_FACTOR_ZERO;
+	SceGxmFragmentProgram *fp = NULL;
+	if (sceGxmShaderPatcherCreateFragmentProgram(d->patcher, d->clearId[1], fmt, ms, color ? NULL : &mask,
+	                                             d->clearProg[0], &fp) < 0)
+		return NULL;
+	d->clearFp[d->clearFpCount].key = key;
+	d->clearFp[d->clearFpCount].fp = fp;
+	d->clearFpCount++;
+	return fp;
+}
+
+/* Returns false when the quads could not be drawn and the caller has to
+ * clear the old way. */
+static bool vkv_clear_with_quads(VkvReplay *R, const VkvCmdClearAttach *c) {
+	struct VkDevice_T *d = R->dev;
+	if (vkv_compat(VKV_COMPAT_CPU_CLEAR) || !vkv_clear_programs(d)) return false;
+	bool color = false, depth = false, stencil = false;
+	VkClearValue cv;
+	memset(&cv, 0, sizeof(cv));
+	VkClearDepthStencilValue ds = { 1.0f, 0 };
+	for (uint32_t i = 0; i < c->na; i++) {
+		const VkClearAttachment *a = &c->a[i];
+		if ((a->aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) && R->colorImg) { color = true; cv = a->clearValue; }
+		if ((a->aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) && R->depthImg) { depth = true; ds.depth = a->clearValue.depthStencil.depth; }
+		if ((a->aspectMask & VK_IMAGE_ASPECT_STENCIL_BIT) && R->depthImg) {
+			stencil = true;
+			ds.stencil = a->clearValue.depthStencil.stencil;
+		}
+	}
+	if (!color && !depth && !stencil) return true;
+	const VkvFormatInfo *fi = R->colorImg ? R->colorImg->fi : NULL;
+	SceGxmFragmentProgram *fp = vkv_clear_fp(d, fi ? fi->outReg : SCE_GXM_OUTPUT_REGISTER_FORMAT_UCHAR4,
+	                                         vkv_gxm_multisample(R->rp->samples), color);
+	if (!fp) return false;
+
+	SceGxmContext *ctx = R->ctx;
+	sceGxmSetVertexProgram(ctx, d->clearVp);
+	sceGxmSetFragmentProgram(ctx, fp);
+	sceGxmSetCullMode(ctx, SCE_GXM_CULL_NONE);
+	sceGxmSetTwoSidedEnable(ctx, SCE_GXM_TWO_SIDED_DISABLED);
+	sceGxmSetFrontPolygonMode(ctx, SCE_GXM_POLYGON_MODE_TRIANGLE_FILL);
+	sceGxmSetFrontDepthBias(ctx, 0, 0);
+	sceGxmSetFrontDepthFunc(ctx, SCE_GXM_DEPTH_FUNC_ALWAYS);
+	sceGxmSetFrontDepthWriteEnable(ctx, depth ? SCE_GXM_DEPTH_WRITE_ENABLED : SCE_GXM_DEPTH_WRITE_DISABLED);
+	sceGxmSetFrontStencilFunc(ctx, SCE_GXM_STENCIL_FUNC_ALWAYS, SCE_GXM_STENCIL_OP_KEEP, SCE_GXM_STENCIL_OP_KEEP,
+	                          stencil ? SCE_GXM_STENCIL_OP_REPLACE : SCE_GXM_STENCIL_OP_KEEP, 0xFF, stencil ? 0xFF : 0);
+	sceGxmSetFrontStencilRef(ctx, ds.stencil & 0xFF);
+	/* clip space is the whole framebuffer, z goes straight to depth */
+	float fw = (float)R->fb->width, fh = (float)R->fb->height;
+	sceGxmSetViewport(ctx, fw * 0.5f, fw * 0.5f, fh * 0.5f, fh * 0.5f, 0.0f, 1.0f);
+	sceGxmSetRegionClip(ctx, SCE_GXM_REGION_CLIP_OUTSIDE, 0, 0, R->fb->width - 1, R->fb->height - 1);
+
+	float col[4] = { cv.color.float32[0], cv.color.float32[1], cv.color.float32[2], cv.color.float32[3] };
+	for (uint32_t k = 0; k < c->nr; k++) {
+		const VkRect2D *r = &c->r[k].rect;
+		float rect[4] = { r->offset.x / fw * 2.0f - 1.0f, r->offset.y / fh * 2.0f - 1.0f,
+		                  (r->offset.x + (float)r->extent.width) / fw * 2.0f - 1.0f,
+		                  (r->offset.y + (float)r->extent.height) / fh * 2.0f - 1.0f };
+		float z = ds.depth;
+		void *ub;
+		if (sceGxmReserveVertexDefaultUniformBuffer(ctx, &ub) < 0) return false;
+		sceGxmSetUniformDataF(ub, d->clearRect, 0, 4, rect);
+		sceGxmSetUniformDataF(ub, d->clearDepth, 0, 1, &z);
+		if (sceGxmReserveFragmentDefaultUniformBuffer(ctx, &ub) < 0) return false;
+		sceGxmSetUniformDataF(ub, d->clearColor, 0, 4, col);
+		R->sceneDraws++;
+		sceGxmDraw(ctx, SCE_GXM_PRIMITIVE_TRIANGLE_STRIP, SCE_GXM_INDEX_FORMAT_U16, d->linearIdx16.base, 4);
+	}
+	if (depth || stencil) g_vkv.cur.clears++;
+	/* the next draw sets its own state again */
+	R->pipeDirty = true;
+	R->vpVariant = -1;
+	R->viewportDirty = true;
+	R->scissorDirty = true;
+	return true;
+}
+
 static void vkv_exec_clear_attachments(VkvReplay *R, const VkvCmdClearAttach *c) {
 	if (!R->inScene) return;
+	if (vkv_clear_with_quads(R, c)) return;
 	bool clearDepth = false;
 	float d = 1.0f;
 	uint32_t s = 0;
@@ -392,6 +546,7 @@ static void vkv_apply_pipeline(VkvReplay *R, VkvPipeline *p, int variant) {
 	R->pipeDirty = false;
 	g_vkv.cur.pipelineBinds++;
 	sceGxmSetFragmentProgram(ctx, p->fp);
+	R->fpScissorOn = false;
 	sceGxmSetCullMode(ctx, vkv_cull(p));
 	sceGxmSetFrontDepthFunc(ctx, p->depthFunc);
 	sceGxmSetBackDepthFunc(ctx, p->depthFunc);
@@ -462,17 +617,22 @@ static void vkv_apply_viewport(VkvReplay *R, const VkvPipeline *p) {
 		int32_t ex = VKV_MIN((int32_t)ceilf(vx0 + fabsf(v.width)), w), ey = VKV_MIN((int32_t)ceilf(vy0 + fabsf(v.height)), h);
 		const VkRect2D *s = p->hasScissor ? &p->scissor : R->hasScissor ? &R->scissor : NULL;
 		bool scissored = s && !vkv_compat(VKV_COMPAT_IGNORE_SCISSOR);
+		R->exactScissor = false;
 		if (scissored) {
 			int32_t qx = s->offset.x, qy = s->offset.y;
 			int32_t qe = qx + (int32_t)s->extent.width, qf = qy + (int32_t)s->extent.height;
-			if (((qx | qy) & 31) || ((qe & 31) && qe < w) || ((qf & 31) && qf < h))
-				VKV_UNSUPPORTED("pixel-exact scissor (GXM region clip works on 32x32 tiles)");
+			/* the region clip works on 32x32 tiles; anything finer is done by the fragment shader */
+			R->exactScissor = ((qx | qy) & 31) || ((qe & 31) && qe < w) || ((qf & 31) && qf < h);
 			sx = VKV_MAX(sx, s->offset.x);
 			sy = VKV_MAX(sy, s->offset.y);
 			ex = VKV_MIN(ex, (int32_t)(s->offset.x + s->extent.width));
 			ey = VKV_MIN(ey, (int32_t)(s->offset.y + s->extent.height));
 		}
 		if (ex <= sx || ey <= sy) { sx = sy = 0; ex = ey = 1; } /* empty: clip almost all */
+		R->scissorPx[0] = (float)sx;
+		R->scissorPx[1] = (float)sy;
+		R->scissorPx[2] = (float)ex;
+		R->scissorPx[3] = (float)ey;
 		sceGxmSetRegionClip(R->ctx, SCE_GXM_REGION_CLIP_OUTSIDE, (unsigned)sx, (unsigned)sy, (unsigned)(ex - 1),
 		                    (unsigned)(ey - 1));
 	}
@@ -480,7 +640,10 @@ static void vkv_apply_viewport(VkvReplay *R, const VkvPipeline *p) {
 
 static const uint8_t *vkv_uniform_buffer_data(VkvReplay *R, int set, uint32_t binding, uint32_t *range) {
 	if (set == VKV_INTERNAL_SET) {
-		(void)binding;
+		if (binding == 1) {
+			*range = sizeof(R->scissorPx);
+			return (const uint8_t *)R->scissorPx;
+		}
 		*range = sizeof(R->fbInv);
 		return (const uint8_t *)R->fbInv;
 	}
@@ -694,6 +857,13 @@ static void vkv_exec_draw(VkvReplay *R, const VkvCmdDraw *c, bool indexed) {
 
 	vkv_apply_pipeline(R, p, is32 ? 1 : 0);
 	vkv_apply_viewport(R, p);
+	/* a scissor between tiles: the fragment program variant discards the rest */
+	bool exact = R->exactScissor && vkv_pipeline_scissor_program(R->dev, p);
+	if (R->exactScissor && !exact) VKV_UNSUPPORTED("pixel-exact scissor for Cg shaders (GXM clips on 32x32 tiles)");
+	if (exact != R->fpScissorOn) {
+		sceGxmSetFragmentProgram(R->ctx, exact ? p->fpScissor : p->fp);
+		R->fpScissorOn = exact;
+	}
 	vkv_bind_resources(R, p);
 
 	/* base vertex: shift every per-vertex stream */
@@ -719,8 +889,12 @@ static void vkv_exec_draw(VkvReplay *R, const VkvCmdDraw *c, bool indexed) {
 		void *ub;
 		if (p->vDefaultSize && sceGxmReserveVertexDefaultUniformBuffer(R->ctx, &ub) >= 0)
 			vkv_write_uniforms(R, ub, p->vuni, p->vuniCount, p->vname);
-		if (p->fDefaultSize && sceGxmReserveFragmentDefaultUniformBuffer(R->ctx, &ub) >= 0)
+		if (exact) {
+			if (p->fDefaultSizeScissor && sceGxmReserveFragmentDefaultUniformBuffer(R->ctx, &ub) >= 0)
+				vkv_write_uniforms(R, ub, p->funiScissor, p->funiScissorCount, p->fname);
+		} else if (p->fDefaultSize && sceGxmReserveFragmentDefaultUniformBuffer(R->ctx, &ub) >= 0) {
 			vkv_write_uniforms(R, ub, p->funi, p->funiCount, p->fname);
+		}
 
 		R->sceneDraws++;
 		int r = sceGxmDraw(R->ctx, p->prim, ifmt, indices, c->count);

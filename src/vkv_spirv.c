@@ -148,6 +148,8 @@ typedef struct Tr {
 
 static uint32_t g_storageArraySize = 64;
 void vkv_spirv_set_storage_array_size(uint32_t elements) { g_storageArraySize = elements ? elements : 64; }
+static int g_scissorVariant;
+void vkv_spirv_set_scissor_variant(int enabled) { g_scissorVariant = enabled; }
 
 static const char *k_unsupportedRes[] = {
 	"storage buffers", "storage images", "subpass inputs", "acceleration structures",
@@ -780,9 +782,26 @@ static char *rewrite_sampler_arrays(Tr *t, const char *line) {
 	return cur;
 }
 
+/* The window position the scissor variant compares, an existing WPOS input or a new one. */
+static const char *scissor_wpos(const Tr *t) {
+	static char name[160];
+	for (uint32_t i = 0; i < t->inCount; i++)
+		if (!strcmp(t->in[i].sem, "WPOS")) {
+			snprintf(name, sizeof(name), "stage_input_%s", t->in[i].name);
+			return name;
+		}
+	return "vkv_wpos";
+}
+
+static bool scissor_variant(const Tr *t) { return g_scissorVariant && t->stage == VKV_SPIRV_FRAGMENT; }
+
 static void emit_signature(Tr *t, Sb *o) {
 	sb_puts(o, "void main(");
 	bool first = true;
+	if (scissor_variant(t) && !strcmp(scissor_wpos(t), "vkv_wpos")) {
+		sb_puts(o, "float4 vkv_wpos : WPOS");
+		first = false;
+	}
 	for (uint32_t i = 0; i < t->inCount; i++) {
 		const Io *io = &t->in[i];
 		sb_printf(o, "%s%s stage_input_%s : %s", first ? "" : ",\n          ", io->isInt ? io->floatType : io->type,
@@ -986,9 +1005,20 @@ static char *rewrite(Tr *t, const char *hlsl) {
 			continue;
 		}
 		if (starts_with(line, "SPIRV_Cross_Output main(") || starts_with(line, "void main(")) {
+			if (scissor_variant(t)) {
+				/* pixel-exact scissor: GXM's region clip only works on 32x32 tiles */
+				static const Block internal = { "vkv_internal", VKV_SPIRV_INTERNAL_SET, 1, 0, 0 };
+				sb_puts(&o, "uniform float4 vkv_scissor;\n");
+				add_uniform(t, "vkv_scissor", 0, &internal, VKV_SPIRV_FLOAT);
+			}
 			emit_signature(t, &o);
 			i++;
 			if (i < count) sb_printf(&o, "%s\n", lines[i]);
+			if (scissor_variant(t))
+				sb_printf(&o, "    float2 vkv_px = floor(%s.xy - 0.25f);\n"
+				              "    if (vkv_px.x < vkv_scissor.x || vkv_px.y < vkv_scissor.y || vkv_px.x >= vkv_scissor.z ||\n"
+				              "        vkv_px.y >= vkv_scissor.w)\n"
+				              "        discard;\n", scissor_wpos(t));
 			if (t->intInit.p) sb_puts(&o, t->intInit.p);
 			for (i++; i < count && strcmp(lines[i], "}"); i++) emit_main_statement(t, &o, lines[i]);
 			sb_puts(&o, "}\n");

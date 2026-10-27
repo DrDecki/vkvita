@@ -250,6 +250,7 @@ static bool s_gxmInitialized;
 static void vkv_device_teardown(struct VkDevice_T *d) {
 	if (d->ctx) sceGxmFinish(d->ctx);
 	if (s_gxmInitialized) sceGxmDisplayQueueFinish();
+	vkv_clear_programs_free(d);
 	vkv_shark_term(d);
 	if (d->patcher) sceGxmShaderPatcherDestroy(d->patcher);
 	vkv_gpu_free(&d->patcherBuf);

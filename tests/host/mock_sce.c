@@ -188,7 +188,7 @@ int sceCtrlPeekBufferPositive(int port, SceCtrlData *pad, int count) {
 /* ------------------------------------------------------------------------ */
 /* Programs                                                                 */
 /* ------------------------------------------------------------------------ */
-#define MP_MAX 24
+#define MP_MAX 128
 struct SceGxmProgramParameter {
 	char     name[40];
 	int      cat, type, semantic;
@@ -496,8 +496,8 @@ int sceGxmShaderPatcherCreateVertexProgram(SceGxmShaderPatcher *sp, SceGxmShader
 		if (streams[s].indexSource != streams[s + 1].indexSource) mock_fail("mixed stream index sources");
 	struct SceGxmVertexProgram *vp = calloc(1, sizeof(*vp));
 	vp->prog = prog; vp->reg = id; vp->na = na; vp->ns = ns;
-	memcpy(vp->attrs, attrs, na * sizeof(*attrs));
-	memcpy(vp->streams, streams, ns * sizeof(*streams));
+	if (na) memcpy(vp->attrs, attrs, na * sizeof(*attrs));
+	if (ns) memcpy(vp->streams, streams, ns * sizeof(*streams));
 	id->refs++;
 	sp->vps++;
 	*out = vp;
