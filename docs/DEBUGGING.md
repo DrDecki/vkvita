@@ -125,6 +125,7 @@ Reading it:
 | `no_vsync` | `VKV_COMPAT_NO_VSYNC` | Measure uncapped frame rate (tearing possible) |
 | `ignore_scissor` | `VKV_COMPAT_IGNORE_SCISSOR` | Scissor rectangles hide too much |
 | `fast_transfers` | `VKV_COMPAT_FAST_TRANSFERS` | Skip the GPU wait before CPU-executed copies (faster, can race) |
+| `cpu_copy` | `VKV_COMPAT_CPU_COPY` | Image copies look wrong; copies with the CPU instead of the GXM transfer unit (slower, waits for the GPU) |
 
 ## Common problems
 

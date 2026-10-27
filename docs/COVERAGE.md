@@ -61,7 +61,8 @@ RGBA16F, RG16F, R16F, R32F. Compressed formats must be power-of-two sized.
 | `vkCmdPipelineBarrier` | full | Layout transitions are no-ops; GPU-to-transfer/host barriers wait for the GPU |
 | `vkCmdDrawIndirect`, `vkCmdDrawIndexedIndirect` | full | The parameters are read from the buffer when the command buffer is submitted |
 | `vkCmdResolveImage` | full | A copy, because multisampled color images already hold the averaged pixels |
-| `vkCmdCopyImage`, `vkCmdBlitImage` | full | On the CPU at submit. Blits scale and flip; LINEAR filters 8-bit formats, others use nearest. Mipmap generation with a blit chain works |
+| `vkCmdCopyImage` | full | Linear color images are copied by the GXM transfer unit (`sceGxmTransferCopy`), so the CPU neither waits for the GPU nor touches the pixels; the transfer waits for scenes still drawing the source. Cube maps, compressed and depth images are copied by the CPU. `compat = cpu_copy` turns the transfer unit off |
+| `vkCmdBlitImage` | full | On the CPU at submit. Blits scale and flip; LINEAR filters 8-bit formats, others use nearest. Mipmap generation with a blit chain works |
 | `vkCmdClearDepthStencilImage` | full | Applied as the background depth/stencil of the next scene that uses the image |
 | `vkCmdSetLineWidth` | full | Whole pixels, 1 to 16 |
 | `vkCmdNextSubpass` | full | |
@@ -74,9 +75,10 @@ RGBA16F, RG16F, R16F, R32F. Compressed formats must be power-of-two sized.
 | Fences (`vkCreateFence`, `vkWaitForFences` with timeout, `vkResetFences`, `vkGetFenceStatus`) | full | GXM notifications, up to 512 fences |
 | Semaphores | full | One in-order queue, so they need no work |
 | Events (`vkCreateEvent`, set/reset/status, `vkCmdSetEvent/ResetEvent/WaitEvents`) | full | One in-order queue, so waiting is a barrier |
-| Occlusion queries | full | GXM visibility buffer, exact sample counts, up to 1024 queries. Reading results waits for the GPU |
+| Occlusion queries | full | GXM visibility buffer, exact sample counts, up to 1024 queries. Reading results waits for the GPU. Clears inside a query are not counted |
+| `vkCmdCopyQueryPoolResults` | full | Written by the CPU at submit, after waiting for the scenes that ended the queries; all result flags |
 | Timestamp queries | partial | CPU time when the command buffer is submitted, in nanoseconds, not GPU time |
-| Pipeline statistics queries, `vkCmdCopyQueryPoolResults`, timeline semaphores | missing | |
+| Pipeline statistics queries, timeline semaphores | missing | GXM has no counters for pipeline statistics |
 
 ## Multisampling
 

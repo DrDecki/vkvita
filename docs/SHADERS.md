@@ -38,6 +38,10 @@ Nothing from the sections below has to be done by hand:
 - Integer push constant and uniform buffer members are converted to float on
   upload and back to int in the shader.
 - Integer varyings (`flat out int`) are carried as floats and rounded.
+- Varyings use locations 0 to 9, one GXM `TEXCOORD` slot each, so a stage
+  passes at most ten vectors to the next (`maxVertexOutputComponents` is 40).
+  A larger location fails with a clear error. Pack two `vec2` into one `vec4`
+  when you need more.
 - `gl_VertexIndex` and `gl_InstanceIndex` use the `INDEX` and `INSTANCE`
   inputs of the GXM compiler, so a vertex shader can build a full screen
   triangle without a vertex buffer. Unlike Vulkan they do not include

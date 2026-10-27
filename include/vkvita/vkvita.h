@@ -35,7 +35,8 @@ typedef enum VkvCompatFlagBits {
 	VKV_COMPAT_FORCE_VSYNC    = 1u << 5,
 	VKV_COMPAT_NO_VSYNC       = 1u << 6,
 	VKV_COMPAT_IGNORE_SCISSOR = 1u << 7,
-	VKV_COMPAT_FAST_TRANSFERS = 1u << 8
+	VKV_COMPAT_FAST_TRANSFERS = 1u << 8,
+	VKV_COMPAT_CPU_COPY       = 1u << 9
 } VkvCompatFlagBits;
 typedef uint32_t VkvCompatFlags;
 

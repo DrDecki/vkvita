@@ -79,6 +79,7 @@ The config file also works with an already finished VPK.
 | `no_vsync` | No present waits for vblank. Can tear |
 | `ignore_scissor` | Ignores scissor rectangles |
 | `fast_transfers` | Skips the GPU wait before copies. Faster, but can cause corruption |
+| `cpu_copy` | Copies images with the CPU instead of the GXM transfer unit. Slower |
 
 ### Misc Flags
 
@@ -128,7 +129,7 @@ Samples can be found in the `samples` folder.
 | `gpu_features` | Mipmaps (uploaded and blitted), a mipmapped cube map, a BC1 texture with a separate sampler, wide lines, indirect draws and occlusion queries |
 | `subpasses` | A render pass with three subpasses, one of them reading the first through an input attachment |
 | `msaa` | 4x and 2x MSAA with a resolve attachment, next to the same scene without multisampling |
-| `shader_tests` | Seventeen checks run on the GPU, green when they pass: structs in uniform blocks, sampler arrays, read-only storage buffers, std430 arrays, array layers, swizzles and LOD bias |
+| `shader_tests` | Nineteen checks run on the GPU, green when they pass: structs in uniform blocks, sampler arrays, read-only storage buffers, std430 arrays, array layers, swizzles, LOD bias, the pixel exact scissor, image copies on the transfer unit and `vkCmdCopyQueryPoolResults` |
 | `standalone_template` | A starting point for your own project |
 
 ## Tools
