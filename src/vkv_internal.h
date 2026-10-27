@@ -390,6 +390,7 @@ void vkv_shader_release(VkvShaderModule *m);
 VkResult vkv_shader_get_program(struct VkDevice_T *dev, VkvShaderModule *m, VkvStage stage,
                                 const SceGxmProgram **prog, SceGxmShaderPatcherId *pid);
 void     vkv_shader_log_program(const char *name, const SceGxmProgram *p);
+bool vkv_shader_is_system_input(const SceGxmProgramParameter *pp);
 const SceGxmProgramParameter *vkv_shader_find_attribute(const VkvShaderModule *m, const SceGxmProgram *p,
                                                         uint32_t location);
 uint32_t vkv_build_uniform_map(const VkvShaderModule *m, const SceGxmProgram *p, uint32_t baseOffset,

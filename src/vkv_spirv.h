@@ -51,6 +51,8 @@ void vkv_spirv_free(VkvSpirvResult *r);
 
 int vkv_spirv_lower_subpass(const uint32_t *words, size_t wordCount, uint32_t **outWords, size_t *outCount);
 
+int vkv_spirv_lower_builtins(const uint32_t *words, size_t wordCount, uint32_t **outWords, size_t *outCount);
+
 #ifdef __cplusplus
 }
 #endif
