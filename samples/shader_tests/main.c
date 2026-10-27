@@ -409,6 +409,11 @@ int main(void) {
 			                   &push);
 			vkCmdDraw(cb, 6, 1, 0, 0);
 		}
+		struct { int32_t tile, which; float weights[4]; float lodScale; } red = { 16, 7, { 0 }, lodScale };
+		VkRect2D left = { { 0, 0 }, { 36, s.extent.height } };
+		vkCmdSetScissor(cb, 0, 1, &left);
+		vkCmdPushConstants(cb, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(red), &red);
+		vkCmdDraw(cb, 6, 1, 0, 0);
 		sample_end_frame(&s);
 		if (++frameNo == 60) vkvLog(VKV_LOG_WARN, "shader_tests: running, seventeen green tiles expected");
 	}

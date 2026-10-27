@@ -51,6 +51,7 @@ typedef void (*VkvSpirvLogFn)(VkvSpirvLogLevel level, const char *msg, void *use
 int  vkv_spirv_translate(const uint32_t *words, size_t wordCount, VkvSpirvStage stage, VkvSpirvLogFn log, void *user,
                          VkvSpirvResult *out);
 void vkv_spirv_set_storage_array_size(uint32_t elements);
+void vkv_spirv_set_scissor_variant(int enabled);
 void vkv_spirv_free(VkvSpirvResult *r);
 
 int vkv_spirv_lower_subpass(const uint32_t *words, size_t wordCount, uint32_t **outWords, size_t *outCount);
