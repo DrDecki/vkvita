@@ -62,9 +62,7 @@ struct VkvFFContext_T {
 	uint32_t           vcount, vcap;
 };
 
-/* ------------------------------------------------------------------------ */
-/* Built-in Cg shaders                                                      */
-/* ------------------------------------------------------------------------ */
+/* --- Built-in Cg shaders --- */
 static const char k_ffVertexCg[] =
 	"void main(float3 aPosition, float2 aTexcoord, float4 aColor,\n"
 	"          uniform float4x4 uMvp,\n"
@@ -108,9 +106,7 @@ static VkResult ff_module(struct VkDevice_T *dev, const void *gxp, size_t gxpSiz
 	return r;
 }
 
-/* ------------------------------------------------------------------------ */
-/* Matrices (column-major)                                                  */
-/* ------------------------------------------------------------------------ */
+/* --- Matrices (column-major) --- */
 static void m4_identity(float m[16]) {
 	memset(m, 0, 16 * sizeof(float));
 	m[0] = m[5] = m[10] = m[15] = 1.0f;
@@ -132,9 +128,7 @@ static void ff_mult(VkvFFContext ff, const float m[16]) {
 	m4_mul(t, t, m);
 }
 
-/* ------------------------------------------------------------------------ */
-/* Context                                                                  */
-/* ------------------------------------------------------------------------ */
+/* --- Context --- */
 VkResult vkvffCreateContext(VkDevice device, const VkvFFInitInfo *info, VkvFFContext *out) {
 	*out = NULL;
 	VkvRenderPass *rp = VKV_ND(VkvRenderPass, info->renderPass);
@@ -200,9 +194,7 @@ void vkvffBeginFrame(VkvFFContext ff) {
 	ff->sliceOffset = 0;
 }
 
-/* ------------------------------------------------------------------------ */
-/* State                                                                    */
-/* ------------------------------------------------------------------------ */
+/* --- State --- */
 void vkvffEnable(VkvFFContext ff, uint32_t caps) { ff->caps |= caps; }
 void vkvffDisable(VkvFFContext ff, uint32_t caps) { ff->caps &= ~caps; }
 void vkvffBlendFunc(VkvFFContext ff, VkBlendFactor src, VkBlendFactor dst) { ff->src = src; ff->dst = dst; }
@@ -308,9 +300,7 @@ void vkvffPerspective(VkvFFContext ff, float fovy, float aspect, float n, float 
 	vkvffFrustum(ff, -t * aspect, t * aspect, -t, t, n, f);
 }
 
-/* ------------------------------------------------------------------------ */
-/* Pipelines                                                                */
-/* ------------------------------------------------------------------------ */
+/* --- Pipelines --- */
 static FFPipe *ff_get_pipe(VkvFFContext ff, uint8_t primClass) {
 	FFPipeKey k;
 	memset(&k, 0, sizeof(k));
@@ -394,9 +384,7 @@ static FFPipe *ff_get_pipe(VkvFFContext ff, uint8_t primClass) {
 	return fp;
 }
 
-/* ------------------------------------------------------------------------ */
-/* Drawing                                                                  */
-/* ------------------------------------------------------------------------ */
+/* --- Drawing --- */
 static void ff_emit(VkvFFContext ff, VkCommandBuffer cmd, VkvFFPrimitive prim, const FFVertex *v, uint32_t n) {
 	if (!n) return;
 	if (vkv_validate() && !cmd->inRenderPass) {

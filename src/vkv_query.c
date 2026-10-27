@@ -5,9 +5,7 @@
  */
 #include "vkv_internal.h"
 
-/* ------------------------------------------------------------------------ */
-/* Query pools                                                              */
-/* ------------------------------------------------------------------------ */
+/* --- Query pools --- */
 /* The visibility buffer is created and set together with the context
  * (vkv_vis_init), before the first scene, so the GPU never sees an unset one. */
 bool vkv_vis_init(struct VkDevice_T *dev) {
@@ -159,9 +157,7 @@ VkResult vkv_query_results(struct VkDevice_T *device, VkvQueryPool *p, uint32_t 
 	return res;
 }
 
-/* ------------------------------------------------------------------------ */
-/* Events                                                                   */
-/* ------------------------------------------------------------------------ */
+/* --- Events --- */
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateEvent(VkDevice device, const VkEventCreateInfo *ci,
                                              const VkAllocationCallbacks *alloc, VkEvent *pEvent) {
 	(void)device; (void)ci; (void)alloc;

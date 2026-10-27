@@ -6,9 +6,7 @@
  */
 #include "vkv_internal.h"
 
-/* ------------------------------------------------------------------------ */
-/* Pools                                                                    */
-/* ------------------------------------------------------------------------ */
+/* --- Pools --- */
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateCommandPool(VkDevice device, const VkCommandPoolCreateInfo *ci,
                                                    const VkAllocationCallbacks *alloc, VkCommandPool *pPool) {
 	(void)device; (void)ci; (void)alloc;
@@ -133,9 +131,7 @@ void *vkv_cmd_alloc(struct VkCommandBuffer_T *cb, VkvCmdType type, uint32_t size
 
 #define VKV_CMD(cb, T, type) ((T *)vkv_cmd_alloc((cb), (type), sizeof(T)))
 
-/* ------------------------------------------------------------------------ */
-/* Render passes                                                            */
-/* ------------------------------------------------------------------------ */
+/* --- Render passes --- */
 VKAPI_ATTR void VKAPI_CALL vkCmdBeginRenderPass(VkCommandBuffer cb, const VkRenderPassBeginInfo *bi,
                                                 VkSubpassContents contents) {
 	VKV_TRACE("vkCmdBeginRenderPass");
@@ -174,9 +170,7 @@ VKAPI_ATTR void VKAPI_CALL vkCmdEndRenderPass(VkCommandBuffer cb) {
 	cb->inRenderPass = false;
 }
 
-/* ------------------------------------------------------------------------ */
-/* State                                                                    */
-/* ------------------------------------------------------------------------ */
+/* --- State --- */
 VKAPI_ATTR void VKAPI_CALL vkCmdBindPipeline(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipeline pipeline) {
 	VKV_TRACE("vkCmdBindPipeline");
 	if (bp != VK_PIPELINE_BIND_POINT_GRAPHICS) { VKV_UNSUPPORTED("compute bind point"); return; }
@@ -296,9 +290,7 @@ VKAPI_ATTR void VKAPI_CALL vkCmdSetDepthBounds(VkCommandBuffer cb, float a, floa
 	VKV_UNSUPPORTED("depth bounds");
 }
 
-/* ------------------------------------------------------------------------ */
-/* Draws                                                                    */
-/* ------------------------------------------------------------------------ */
+/* --- Draws --- */
 static bool vkv_draw_checks(VkCommandBuffer cb, const char *fn) {
 	if (!vkv_validate()) return true;
 	if (!cb->inRenderPass) { vkv_fail(fn, "draw outside a render pass"); return false; }
@@ -372,9 +364,7 @@ VKAPI_ATTR void VKAPI_CALL vkCmdDrawIndexedIndirect(VkCommandBuffer cb, VkBuffer
 	vkv_record_indirect(cb, b, o, n, s, true, __func__);
 }
 
-/* ------------------------------------------------------------------------ */
-/* Transfers, clears, barriers                                              */
-/* ------------------------------------------------------------------------ */
+/* --- Transfers, clears, barriers --- */
 VKAPI_ATTR void VKAPI_CALL vkCmdCopyBuffer(VkCommandBuffer cb, VkBuffer src, VkBuffer dst, uint32_t n,
                                            const VkBufferCopy *regions) {
 	VKV_TRACE("vkCmdCopyBuffer");
@@ -545,9 +535,7 @@ VKAPI_ATTR void VKAPI_CALL vkCmdExecuteCommands(VkCommandBuffer cb, uint32_t n, 
 	}
 }
 
-/* ------------------------------------------------------------------------ */
-/* Queries and events                                                       */
-/* ------------------------------------------------------------------------ */
+/* --- Queries and events --- */
 static void vkv_record_query(VkCommandBuffer cb, VkvCmdType type, VkQueryPool pool, uint32_t first, uint32_t count) {
 	VkvQueryPool *p = VKV_ND(VkvQueryPool, pool);
 	if (VKV_CHECK(VKV_OBJ_OK(p, VKV_MAGIC_QPOOL), "invalid query pool")) return;

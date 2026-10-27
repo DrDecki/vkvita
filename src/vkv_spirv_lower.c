@@ -278,9 +278,7 @@ int vkv_spirv_lower_subpass(const uint32_t *w, size_t n, uint32_t **outWords, si
 	return 1;
 }
 
-/* ------------------------------------------------------------------------ */
-/* Built-ins that GXM has as semantics but shader model 3 does not          */
-/* ------------------------------------------------------------------------ */
+/* --- Built-ins that GXM has as semantics but shader model 3 does not --- */
 /* gl_VertexIndex, gl_InstanceIndex and gl_PointCoord become ordinary inputs
  * with fixed names; the Cg rewrite gives them the INDEX, INSTANCE and
  * SPRITECOORD semantics of the GXM compiler. */
@@ -348,17 +346,10 @@ int vkv_spirv_lower_builtins(const uint32_t *w, size_t n, uint32_t **outWords, s
 	return 1;
 }
 
-/* ------------------------------------------------------------------------ */
-/* Integer division and remainder                                           */
-/* ------------------------------------------------------------------------ */
-/* The GXM compiler has no integer divide with a variable denominator, so
- * a / b and a % b on integers are done in float:
- *
- *   q = trunc(fa / fb + sign(fa / fb) * 0.5 / abs(fb))
- *
- * The quotient of two integers moves in steps of 1 / |b|, so the half step
- * absorbs rounding in the division without ever reaching the next integer.
- * Exact while the values stay below 2^24, which shader integers do. */
+/* --- Integer division and remainder --- */
+/* GXM has no integer divide by a variable, so a / b and a % b run in float:
+ * q = trunc(fa / fb + sign(fa / fb) * 0.5 / abs(fb)). The half step absorbs
+ * rounding and is exact below 2^24. */
 enum {
 	OP_TYPE_BOOL = 20, OP_CONVERT_F_TO_U = 109, OP_CONVERT_F_TO_S = 110, OP_CONVERT_S_TO_F = 111,
 	OP_CONVERT_U_TO_F = 112, OP_UDIV = 134, OP_SDIV = 135, OP_FDIV = 136, OP_UMOD = 137, OP_SREM = 138,
@@ -512,20 +503,11 @@ int vkv_spirv_lower_intdiv(const uint32_t *w, size_t n, uint32_t **outWords, siz
 	return 1;
 }
 
-/* ------------------------------------------------------------------------ */
-/* Read-only storage buffers                                                */
-/* ------------------------------------------------------------------------ */
-/* GXM cannot write buffers from a shader, but a storage buffer the shader
- * only reads is just a big uniform block. The storage class becomes Uniform,
- * BufferBlock becomes Block, a runtime array gets a fixed size and
- * OpArrayLength returns that size. VkVita feeds the block like any other
- * uniform buffer, from the storage buffer descriptor.
- *
- * std430 (storage buffers, push constants) packs arrays of scalars and
- * vec2s tighter than an HLSL cbuffer can describe. Such a block gets new
- * offsets and 16 byte array strides in the SPIR-V, only so it can be
- * written out; the old offset and stride of every moved member go back to
- * VkVita, which keeps reading the buffer with the real layout. */
+/* --- Read-only storage buffers --- */
+/* Read-only storage buffers become uniform blocks: runtime arrays get a fixed
+ * size and OpArrayLength returns it. std430 blocks are relaid out so they fit
+ * a cbuffer; the real offsets and strides are returned so the feeding code
+ * can still read the buffer as the app wrote it. */
 enum {
 	OP_TYPE_MATRIX = 24, OP_TYPE_ARRAY = 28, OP_TYPE_RUNTIME_ARRAY = 29, OP_ARRAY_LENGTH = 68, OP_COPY_OBJECT = 83,
 	DEC_BUFFER_BLOCK = 3, DEC_NON_WRITABLE = 24, SC_STORAGE_BUFFER = 12, DEC_ARRAY_STRIDE = 6, SC_PUSH_CONSTANT = 9,
@@ -684,9 +666,8 @@ int vkv_spirv_lower_ssbo(const uint32_t *w, size_t n, uint32_t arraySize, uint32
 		}
 		if (!(ssbo || a[2] == SC_PUSH_CONSTANT) || !st || T->kind[st] != 6 || relayout[st]) continue;
 
-		/* place the members the way a cbuffer can: vectors inside one 16 byte
-		 * register, arrays, matrices and structs on register boundaries, array
-		 * elements 16 bytes apart */
+		/* cbuffer rules: vectors stay in one register, arrays, matrices and
+		 * structs start a register, array elements are 16 bytes apart */
 		uint32_t cursor = 0, cnt = T->count[st], base = T->first[st];
 		bool changed = false, ok = cnt <= LOWER_MAX_MEMBERS && nNew + cnt <= 4096;
 		for (uint32_t m = 0; m < cnt && ok; m++) {

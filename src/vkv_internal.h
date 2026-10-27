@@ -30,9 +30,7 @@ void vkv_vfp_sceGxmDepthStencilSurfaceSetBackgroundDepth(SceGxmDepthStencilSurfa
 #include "vkvita/vkvita.h"
 #include "vkvita/vkvita_ff.h"
 
-/* ------------------------------------------------------------------------ */
-/* Build options                                                            */
-/* ------------------------------------------------------------------------ */
+/* --- Build options --- */
 #ifndef VKV_ENABLE_DEBUG
 #define VKV_ENABLE_DEBUG 1
 #endif
@@ -55,9 +53,7 @@ void vkv_vfp_sceGxmDepthStencilSurfaceSetBackgroundDepth(SceGxmDepthStencilSurfa
 #define VKV_CDRAM_ALIGN     (256 * 1024)
 #define VKV_RAM_ALIGN       4096
 
-/* ------------------------------------------------------------------------ */
-/* Handles                                                                  */
-/* ------------------------------------------------------------------------ */
+/* --- Handles --- */
 #define VKV_ND(T, h)    ((T *)(uintptr_t)(h))        /* non-dispatchable -> struct */
 #define VKV_H(T, p)     ((T)(uintptr_t)(p))          /* struct -> handle */
 
@@ -74,9 +70,7 @@ typedef struct VkvObject {
 	uint32_t magic;
 } VkvObject;
 
-/* ------------------------------------------------------------------------ */
-/* Global state, logging, profiling                                          */
-/* ------------------------------------------------------------------------ */
+/* --- Global state, logging, profiling --- */
 typedef struct VkvStatsCounters {
 	uint32_t drawCalls, indices, scenes, pipelineBinds, descriptorBinds, clears, copies, ffDraws;
 	uint64_t submitUs, gpuWaitUs;
@@ -140,9 +134,7 @@ void vkv_unsupported_once(const char *key, const char *what);
 /* Object validation: checks the magic when validation is on. */
 #define VKV_OBJ_OK(p, m) ((p) != NULL && (!vkv_validate() || ((const VkvObject *)(p))->magic == (uint32_t)(m)))
 
-/* ------------------------------------------------------------------------ */
-/* GPU memory                                                               */
-/* ------------------------------------------------------------------------ */
+/* --- GPU memory --- */
 typedef enum VkvHeapKind { VKV_HEAP_CDRAM = 0, VKV_HEAP_RAM = 1, VKV_HEAP_COUNT } VkvHeapKind;
 
 typedef struct VkvGpuBlock {
@@ -174,10 +166,9 @@ typedef struct VkvPoolBlock {
 typedef struct VkvPool {
 	VkvPoolBlock *blocks[VKV_HEAP_COUNT];
 } VkvPool;
+void vkv_pool_destroy(VkvPool *pool);
 
-/* ------------------------------------------------------------------------ */
-/* Formats                                                                  */
-/* ------------------------------------------------------------------------ */
+/* --- Formats --- */
 typedef struct VkvFormatInfo {
 	VkFormat            vk;
 	uint8_t             bpp;          /* bytes per texel (per block if compressed), 0 = unsupported */
@@ -199,9 +190,7 @@ static inline bool vkv_format_sampleable(const VkvFormatInfo *fi) {
 	return fi && (fi->tex || fi->vk == VK_FORMAT_R8_UNORM);
 }
 
-/* ------------------------------------------------------------------------ */
-/* Instance / physical device / device                                      */
-/* ------------------------------------------------------------------------ */
+/* --- Instance / physical device / device --- */
 struct VkPhysicalDevice_T {
 	VkvObject  obj;
 	struct VkInstance_T *instance;
@@ -312,9 +301,7 @@ void vkv_query_reset(struct VkDevice_T *dev, VkvQueryPool *p, uint32_t first, ui
 VkResult vkv_query_results(struct VkDevice_T *dev, VkvQueryPool *p, uint32_t first, uint32_t count, size_t dataSize,
                            void *data, VkDeviceSize stride, VkQueryResultFlags flags);
 
-/* ------------------------------------------------------------------------ */
-/* Resources                                                                */
-/* ------------------------------------------------------------------------ */
+/* --- Resources --- */
 typedef struct VkDeviceMemory_T {
 	VkvObject     obj;
 	uint8_t      *ptr;
@@ -394,9 +381,7 @@ typedef struct VkSampler_T {
 
 void vkv_texture_apply_sampler(SceGxmTexture *tex, const VkvSampler *s, uint32_t levels);
 
-/* ------------------------------------------------------------------------ */
-/* Shaders                                                                  */
-/* ------------------------------------------------------------------------ */
+/* --- Shaders --- */
 typedef enum VkvStage { VKV_STAGE_VERTEX = 0, VKV_STAGE_FRAGMENT = 1, VKV_STAGE_COUNT } VkvStage;
 
 /* GXM texture unit <- image (and sampler) descriptor. samplerSet -1: the image
@@ -475,9 +460,7 @@ void     vkv_shark_term(struct VkDevice_T *dev);
 SceGxmProgram *vkv_shark_compile(struct VkDevice_T *dev, const char *src, VkvStage stage, const char *name,
                                  uint32_t hash, uint32_t *outSize);
 
-/* ------------------------------------------------------------------------ */
-/* Descriptors and pipelines                                                */
-/* ------------------------------------------------------------------------ */
+/* --- Descriptors and pipelines --- */
 typedef struct VkvDslBinding {
 	uint32_t          binding;
 	VkDescriptorType  type;
@@ -659,9 +642,7 @@ typedef struct VkPipelineCache_T {
 	VkvObject obj;
 } VkvPipelineCache;
 
-/* ------------------------------------------------------------------------ */
-/* Command buffers                                                          */
-/* ------------------------------------------------------------------------ */
+/* --- Command buffers --- */
 typedef enum VkvCmdType {
 	VKV_CMD_BEGIN_RP = 1,
 	VKV_CMD_END_RP,
@@ -794,9 +775,7 @@ typedef struct VkCommandPool_T {
 
 void *vkv_cmd_alloc(struct VkCommandBuffer_T *cb, VkvCmdType type, uint32_t size);
 
-/* ------------------------------------------------------------------------ */
-/* Sync and presentation                                                    */
-/* ------------------------------------------------------------------------ */
+/* --- Sync and presentation --- */
 typedef struct VkFence_T {
 	VkvObject               obj;
 	struct VkDevice_T      *device;

@@ -302,9 +302,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkEnumerateDeviceLayerProperties(VkPhysicalDevice
 	return vkv_enum_props(k_layers, sizeof(k_layers[0]), VKV_ARRAY_SIZE(k_layers), pCount, p);
 }
 
-/* ------------------------------------------------------------------------ */
-/* Surface                                                                  */
-/* ------------------------------------------------------------------------ */
+/* --- Surface --- */
 static VkvSurface s_surface = { { VKV_MAGIC_SURFACE } };
 
 VkResult vkvCreateDisplaySurface(VkInstance instance, VkSurfaceKHR *surface) {
@@ -370,9 +368,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceSurfacePresentModesKHR(VkPhysi
 	return vkv_enum_props(modes, sizeof(modes[0]), VKV_ARRAY_SIZE(modes), pCount, p);
 }
 
-/* ------------------------------------------------------------------------ */
-/* Proc addresses                                                           */
-/* ------------------------------------------------------------------------ */
+/* --- Proc addresses --- */
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance instance, const char *pName) {
 	(void)instance;
 	PFN_vkVoidFunction f = vkv_lookup_proc(pName);

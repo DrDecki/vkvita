@@ -40,9 +40,7 @@ static char *vkv_strdup(const char *s) {
 
 static const char *k_stageNames[] = { "vertex", "fragment" };
 
-/* ------------------------------------------------------------------------ */
-/* vitaShaRK                                                                */
-/* ------------------------------------------------------------------------ */
+/* --- vitaShaRK --- */
 #if VKV_WITH_SHARK
 static const char *s_compilingName = "";
 
@@ -156,9 +154,7 @@ SceGxmProgram *vkv_shark_compile(struct VkDevice_T *dev, const char *src, VkvSta
 #endif
 }
 
-/* ------------------------------------------------------------------------ */
-/* Reflection                                                               */
-/* ------------------------------------------------------------------------ */
+/* --- Reflection --- */
 static const char *vkv_cat_name(SceGxmParameterCategory c) {
 	switch (c) {
 	case SCE_GXM_PARAMETER_CATEGORY_ATTRIBUTE:      return "attribute";
@@ -281,9 +277,7 @@ uint32_t vkv_build_uniform_map(const VkvShaderModule *m, const SceGxmProgram *p,
 	return count;
 }
 
-/* ------------------------------------------------------------------------ */
-/* SPIR-V                                                                   */
-/* ------------------------------------------------------------------------ */
+/* --- SPIR-V --- */
 static bool vkv_shader_add_uniform(VkvShaderModule *m, const char *name, uint32_t offset, int8_t set, uint8_t binding,
                                    uint8_t scalar, uint16_t stride) {
 	for (uint32_t u = 0; u < m->uniCount; u++)
@@ -376,9 +370,7 @@ static SceGxmProgram *vkv_spirv_compile(struct VkDevice_T *dev, VkvShaderModule 
 }
 #endif
 
-/* ------------------------------------------------------------------------ */
-/* Module objects                                                           */
-/* ------------------------------------------------------------------------ */
+/* --- Module objects --- */
 /* The fragment program that discards pixels outside the scissor rectangle;
  * only SPIR-V shaders can have one, since VkVita writes their Cg. */
 bool vkv_shader_get_scissor_program(struct VkDevice_T *dev, VkvShaderModule *m, const SceGxmProgram **prog,
@@ -568,9 +560,7 @@ void vkv_shader_release(VkvShaderModule *m) {
 	free(m);
 }
 
-/* ------------------------------------------------------------------------ */
-/* Helpers                                                                  */
-/* ------------------------------------------------------------------------ */
+/* --- Helpers --- */
 VkResult vkvCreateShaderModuleFromCg(VkDevice device, const char *source, const char *debugName,
                                      VkShaderModule *module) {
 	VkvShaderModuleInfoVITA ext = { VKV_STRUCTURE_TYPE_SHADER_MODULE_INFO_VITA, NULL, VKV_SHADER_SOURCE_CG,

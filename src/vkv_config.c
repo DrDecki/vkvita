@@ -92,9 +92,7 @@ void vkvGetConfig(VkvConfig *config) {
 void vkvSetDebugFlags(VkvDebugFlags flags) { vkv_config_init_once(); g_vkv.cfg.debugFlags = flags; }
 void vkvSetCompatFlags(VkvCompatFlags flags) { vkv_config_init_once(); g_vkv.cfg.compatFlags = flags; }
 
-/* ------------------------------------------------------------------------ */
-/* Config file                                                              */
-/* ------------------------------------------------------------------------ */
+/* --- Config file --- */
 typedef struct { const char *name; uint32_t bit; } VkvFlagName;
 
 static const VkvFlagName k_debugNames[] = {
@@ -193,9 +191,7 @@ void vkv_load_default_config_file(void) {
 	vkvLoadConfigFile(VKV_DEFAULT_CONFIG_FILE);
 }
 
-/* ------------------------------------------------------------------------ */
-/* Logging                                                                  */
-/* ------------------------------------------------------------------------ */
+/* --- Logging --- */
 void vkvSetLogCallback(PFN_vkvLogCallback cb, void *user) {
 	vkv_config_init_once();
 	g_vkv.logCb = cb;
@@ -278,9 +274,7 @@ void vkv_unsupported_once(const char *key, const char *what) {
 	vkv_log(VKV_LOG_WARN, "unsupported: %s", what);
 }
 
-/* ------------------------------------------------------------------------ */
-/* Profiling                                                                */
-/* ------------------------------------------------------------------------ */
+/* --- Profiling --- */
 void vkvGetFrameStats(VkvFrameStats *stats) {
 	if (stats) *stats = g_vkv.last;
 }

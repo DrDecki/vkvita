@@ -14,9 +14,7 @@
 
 #include <spirv_cross_c.h>
 
-/* ------------------------------------------------------------------------ */
-/* Small helpers                                                            */
-/* ------------------------------------------------------------------------ */
+/* --- Small helpers --- */
 typedef struct Sb {
 	char  *p;
 	size_t n, cap;
@@ -96,9 +94,7 @@ static void spvc_error_cb(void *user, const char *error) {
 	logf_((Ctx *)user, VKV_SPIRV_LOG_ERROR, "SPIRV-Cross: %s", error);
 }
 
-/* ------------------------------------------------------------------------ */
-/* Reflection                                                               */
-/* ------------------------------------------------------------------------ */
+/* --- Reflection --- */
 typedef struct Block {
 	char         name[128];
 	int32_t      set;       /* -1 = push constants */
@@ -333,9 +329,7 @@ static bool reflect(Tr *t, spvc_compiler comp, spvc_resources res) {
 	return !t->c->failed;
 }
 
-/* ------------------------------------------------------------------------ */
-/* Rewriting                                                                */
-/* ------------------------------------------------------------------------ */
+/* --- Rewriting --- */
 static Block *find_block(Tr *t, const char *name) {
 	for (uint32_t i = 0; i < t->blockCount; i++)
 		if (!strcmp(t->blocks[i].name, name)) return &t->blocks[i];
@@ -1050,9 +1044,7 @@ static char *rewrite(Tr *t, const char *hlsl) {
 	return drop_unsigned(o.p);
 }
 
-/* ------------------------------------------------------------------------ */
-/* Names                                                                    */
-/* ------------------------------------------------------------------------ */
+/* --- Names --- */
 /* Words the GXM Cg compiler reserves that SPIRV-Cross does not rename for
  * HLSL, so a GLSL variable called "row" would not compile. */
 static const char *const k_cgKeywords[] = {
@@ -1083,9 +1075,7 @@ static void rename_keywords(Tr *t, spvc_compiler comp, uint32_t bound) {
 	}
 }
 
-/* ------------------------------------------------------------------------ */
-/* Entry point                                                              */
-/* ------------------------------------------------------------------------ */
+/* --- Entry point --- */
 int vkv_spirv_translate(const uint32_t *words, size_t wordCount, VkvSpirvStage stage, VkvSpirvLogFn log, void *user,
                         VkvSpirvResult *out) {
 	memset(out, 0, sizeof(*out));

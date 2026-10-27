@@ -111,10 +111,12 @@ With a Makefile, use pkg-config like `samples/standalone_template/Makefile` does
 Most Vulkan code works unchanged. The parts that are different on the Vita:
 
 - **Surface:** use `VK_EXT_headless_surface` or `vkvCreateDisplaySurface()`. The swapchain is always 960x544.
-- **Shaders:** SPIR-V works for the usual vertex and fragment shaders. Storage buffers and compute do not exist on GXM.
+- **Shaders:** SPIR-V works for the usual vertex and fragment shaders. Storage buffers work when the shader only reads them. Compute does not exist on GXM.
 - **Limits:** one color attachment per subpass, no compute. MSAA works with 2x and 4x. Mipmaps need power-of-two textures. The full list is in [docs/COVERAGE.md](docs/COVERAGE.md).
 
 There is also a small fixed function layer (`vkvita_ff.h`) for old GL 1.x style code, see [docs/FIXED_FUNCTION.md](docs/FIXED_FUNCTION.md).
+
+If you want to work on VkVita itself, [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains how the code is put together.
 
 ## Samples
 

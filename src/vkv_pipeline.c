@@ -7,9 +7,7 @@
 
 #include <stdio.h>
 
-/* ------------------------------------------------------------------------ */
-/* Descriptor set layouts                                                   */
-/* ------------------------------------------------------------------------ */
+/* --- Descriptor set layouts --- */
 static int vkv_cmp_binding(const void *a, const void *b) {
 	const VkvDslBinding *x = a, *y = b;
 	return (int)x->binding - (int)y->binding;
@@ -84,9 +82,7 @@ VKAPI_ATTR void VKAPI_CALL vkDestroyDescriptorSetLayout(VkDevice device, VkDescr
 	free(l);
 }
 
-/* ------------------------------------------------------------------------ */
-/* Descriptor pools and sets                                                */
-/* ------------------------------------------------------------------------ */
+/* --- Descriptor pools and sets --- */
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateDescriptorPool(VkDevice device, const VkDescriptorPoolCreateInfo *ci,
                                                       const VkAllocationCallbacks *alloc, VkDescriptorPool *pPool) {
 	(void)device; (void)ci; (void)alloc;
@@ -289,9 +285,7 @@ VKAPI_ATTR void VKAPI_CALL vkUpdateDescriptorSets(VkDevice device, uint32_t writ
 	}
 }
 
-/* ------------------------------------------------------------------------ */
-/* Pipeline layouts                                                         */
-/* ------------------------------------------------------------------------ */
+/* --- Pipeline layouts --- */
 VKAPI_ATTR VkResult VKAPI_CALL vkCreatePipelineLayout(VkDevice device, const VkPipelineLayoutCreateInfo *ci,
                                                       const VkAllocationCallbacks *alloc, VkPipelineLayout *pOut) {
 	(void)device; (void)alloc;
@@ -323,9 +317,7 @@ VKAPI_ATTR void VKAPI_CALL vkDestroyPipelineLayout(VkDevice device, VkPipelineLa
 	free(l);
 }
 
-/* ------------------------------------------------------------------------ */
-/* Render passes and framebuffers                                           */
-/* ------------------------------------------------------------------------ */
+/* --- Render passes and framebuffers --- */
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateRenderPass(VkDevice device, const VkRenderPassCreateInfo *ci,
                                                   const VkAllocationCallbacks *alloc, VkRenderPass *pOut) {
 	VKV_TRACE("vkCreateRenderPass");
@@ -499,9 +491,7 @@ VKAPI_ATTR void VKAPI_CALL vkDestroyFramebuffer(VkDevice device, VkFramebuffer f
 	free(fb);
 }
 
-/* ------------------------------------------------------------------------ */
-/* Graphics pipelines                                                       */
-/* ------------------------------------------------------------------------ */
+/* --- Graphics pipelines --- */
 static SceGxmBlendFactor vkv_blend_factor(VkBlendFactor f) {
 	switch (f) {
 	case VK_BLEND_FACTOR_ZERO:                     return SCE_GXM_BLEND_FACTOR_ZERO;
