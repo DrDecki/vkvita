@@ -543,18 +543,18 @@ static void vkv_write_uniforms(VkvReplay *R, void *buf, const VkvUniformMap *map
 	}
 }
 
-static VkvDescriptor *vkv_find_descriptor(VkvReplay *R, int set, uint32_t binding) {
+static VkvDescriptor *vkv_find_descriptor(VkvReplay *R, int set, uint32_t binding, uint32_t element) {
 	if (set < 0 || set >= VKV_MAX_SETS || !R->sets[set]) return NULL;
 	VkvSet *s = R->sets[set];
 	for (uint32_t b = 0; b < s->layout->bindingCount; b++)
-		if (s->layout->bindings[b].binding == binding && s->layout->bindings[b].count)
-			return &s->desc[s->layout->bindings[b].first];
+		if (s->layout->bindings[b].binding == binding && element < s->layout->bindings[b].count)
+			return &s->desc[s->layout->bindings[b].first + element];
 	return NULL;
 }
 
 /* Builds the texture for one explicit texture unit from its image and sampler descriptors. */
 static bool vkv_resolve_texture(VkvReplay *R, const VkvTexBinding *t, SceGxmTexture *out) {
-	VkvDescriptor *img = vkv_find_descriptor(R, t->imageSet, t->imageBinding);
+	VkvDescriptor *img = vkv_find_descriptor(R, t->imageSet, t->imageBinding, t->imageElement);
 	if (!img || !img->valid) return false;
 	if (img->view) img->view->image->readSerial = R->dev->sceneSerial + 1; /* the scene being recorded */
 	if (img->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER || img->type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT) {
@@ -564,7 +564,7 @@ static bool vkv_resolve_texture(VkvReplay *R, const VkvTexBinding *t, SceGxmText
 	if (img->type != VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE || !img->view) return false;
 	*out = img->view->tex;
 	if (t->samplerSet >= 0) {
-		VkvDescriptor *sd = vkv_find_descriptor(R, t->samplerSet, t->samplerBinding);
+		VkvDescriptor *sd = vkv_find_descriptor(R, t->samplerSet, t->samplerBinding, t->samplerElement);
 		if (!sd || !sd->sampler) return false;
 		vkv_texture_apply_sampler(out, sd->sampler, img->view->levelCount);
 	}

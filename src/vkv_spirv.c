@@ -100,15 +100,19 @@ static void spvc_error_cb(void *user, const char *error) {
 /* Reflection                                                               */
 /* ------------------------------------------------------------------------ */
 typedef struct Block {
-	char     name[128];
-	int32_t  set;       /* -1 = push constants */
-	uint32_t binding;
+	char         name[128];
+	int32_t      set;       /* -1 = push constants */
+	uint32_t     binding;
+	spvc_type_id type;      /* the block struct */
+	uint32_t     cursor;    /* next member while rewriting the cbuffer */
 } Block;
 
 typedef struct Sampler {
 	char            name[128];
 	VkvSpirvTexture t;
 	bool            fixedUnit;  /* combined image sampler: unit = binding if free */
+	char            array[128]; /* element of this sampler array, "" when not an array */
+	uint32_t        arraySize;
 } Sampler;
 
 #define MAX_BLOCKS   16
@@ -135,7 +139,8 @@ typedef struct Tr {
 	uint32_t  inCount, outCount;
 	VkvSpirvUniform *unis;
 	uint32_t  uniCount, uniCap;
-	Sb        intInit;     /* "name = int(name_vkv);" lines for integer uniforms */
+	Sb        intInit;     /* lines run at the start of main: integer and struct uniforms */
+	spvc_compiler comp;
 	bool      pointSize;   /* the vertex shader writes gl_PointSize */
 } Tr;
 
@@ -147,6 +152,33 @@ static void block_name(spvc_compiler comp, spvc_type_id base, char *out, size_t 
 	const char *n = spvc_compiler_get_name(comp, base);
 	if (n && *n) snprintf(out, cap, "%s", n);
 	else snprintf(out, cap, "_%u", (unsigned)base);
+}
+
+/* Array size of a resource variable, 1 when it is not an array, 0 when the
+ * array has no fixed size or more than one dimension. */
+static unsigned resource_array_size(spvc_compiler comp, spvc_resources res, spvc_resource_type kind, spvc_variable_id id) {
+	const spvc_reflected_resource *list;
+	size_t n;
+	if (spvc_resources_get_resource_list_for_type(res, kind, &list, &n) != SPVC_SUCCESS) return 1;
+	for (size_t i = 0; i < n; i++) {
+		if (list[i].id != id) continue;
+		spvc_type type = spvc_compiler_get_type_handle(comp, list[i].type_id);
+		unsigned dims = spvc_type_get_num_array_dimensions(type);
+		if (!dims) return 1;
+		if (dims > 1 || !spvc_type_array_dimension_is_literal(type, 0)) return 0;
+		return spvc_type_get_array_dimension(type, 0);
+	}
+	return 1;
+}
+
+static Sampler *new_sampler(Tr *t) {
+	if (t->samplerCount >= MAX_SAMPLERS) {
+		logf_(t->c, VKV_SPIRV_LOG_ERROR, "more than %d textures in one stage", MAX_SAMPLERS);
+		return NULL;
+	}
+	Sampler *s = &t->samplers[t->samplerCount++];
+	memset(s, 0, sizeof(*s));
+	return s;
 }
 
 static bool reflect(Tr *t, spvc_compiler comp, spvc_resources res) {
@@ -170,36 +202,65 @@ static bool reflect(Tr *t, spvc_compiler comp, spvc_resources res) {
 	if (spvc_compiler_build_combined_image_samplers(comp) == SPVC_SUCCESS)
 		spvc_compiler_get_combined_image_samplers(comp, &combos, &comboCount);
 	for (size_t i = 0; i < comboCount; i++) {
-		if (t->samplerCount >= MAX_SAMPLERS) { logf_(t->c, VKV_SPIRV_LOG_ERROR, "too many samplers"); break; }
-		Sampler *s = &t->samplers[t->samplerCount++];
-		memset(s, 0, sizeof(*s));
-		snprintf(s->name, sizeof(s->name), "vkv_tex%u", (unsigned)i);
-		spvc_compiler_set_name(comp, combos[i].combined_id, s->name);
-		s->t.imageSet = (int32_t)spvc_compiler_get_decoration(comp, combos[i].image_id, SpvDecorationDescriptorSet);
-		s->t.imageBinding = spvc_compiler_get_decoration(comp, combos[i].image_id, SpvDecorationBinding);
-		if (dummy && combos[i].sampler_id == dummy) {
-			s->t.samplerSet = -2;
-		} else {
-			s->t.samplerSet = (int32_t)spvc_compiler_get_decoration(comp, combos[i].sampler_id, SpvDecorationDescriptorSet);
-			s->t.samplerBinding = spvc_compiler_get_decoration(comp, combos[i].sampler_id, SpvDecorationBinding);
+		char name[32];
+		snprintf(name, sizeof(name), "vkv_tex%u", (unsigned)i);
+		spvc_compiler_set_name(comp, combos[i].combined_id, name);
+		unsigned images = resource_array_size(comp, res, SPVC_RESOURCE_TYPE_SEPARATE_IMAGE, combos[i].image_id);
+		unsigned samplers = dummy && combos[i].sampler_id == dummy
+		                    ? 1 : resource_array_size(comp, res, SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS, combos[i].sampler_id);
+		if (!images || !samplers) {
+			logf_(t->c, VKV_SPIRV_LOG_ERROR, "texture arrays need one fixed size ('%s')", name);
+			continue;
+		}
+		unsigned count = images > samplers ? images : samplers;
+		for (unsigned k = 0; k < count; k++) {
+			Sampler *s = new_sampler(t);
+			if (!s) break;
+			if (count > 1) {
+				snprintf(s->name, sizeof(s->name), "%s_%u", name, k);
+				snprintf(s->array, sizeof(s->array), "%s", name);
+				s->arraySize = count;
+			} else {
+				snprintf(s->name, sizeof(s->name), "%s", name);
+			}
+			s->t.imageSet = (int32_t)spvc_compiler_get_decoration(comp, combos[i].image_id, SpvDecorationDescriptorSet);
+			s->t.imageBinding = spvc_compiler_get_decoration(comp, combos[i].image_id, SpvDecorationBinding);
+			s->t.imageElement = images > 1 ? k : 0;
+			if (dummy && combos[i].sampler_id == dummy) {
+				s->t.samplerSet = -2;
+			} else {
+				s->t.samplerSet = (int32_t)spvc_compiler_get_decoration(comp, combos[i].sampler_id,
+				                                                        SpvDecorationDescriptorSet);
+				s->t.samplerBinding = spvc_compiler_get_decoration(comp, combos[i].sampler_id, SpvDecorationBinding);
+				s->t.samplerElement = samplers > 1 ? k : 0;
+			}
 		}
 	}
 
 	if (spvc_resources_get_resource_list_for_type(res, SPVC_RESOURCE_TYPE_SAMPLED_IMAGE, &list, &n) == SPVC_SUCCESS) {
 		for (size_t i = 0; i < n; i++) {
-			spvc_type type = spvc_compiler_get_type_handle(comp, list[i].type_id);
-			if (spvc_type_get_num_array_dimensions(type)) {
-				logf_(t->c, VKV_SPIRV_LOG_ERROR, "sampler arrays are not supported ('%s')", list[i].name);
+			unsigned count = resource_array_size(comp, res, SPVC_RESOURCE_TYPE_SAMPLED_IMAGE, list[i].id);
+			if (!count) {
+				logf_(t->c, VKV_SPIRV_LOG_ERROR, "sampler arrays need one fixed size ('%s')", list[i].name);
 				continue;
 			}
-			if (t->samplerCount >= MAX_SAMPLERS) { logf_(t->c, VKV_SPIRV_LOG_ERROR, "too many samplers"); break; }
-			Sampler *s = &t->samplers[t->samplerCount++];
-			memset(s, 0, sizeof(*s));
-			snprintf(s->name, sizeof(s->name), "%s", list[i].name);
-			s->t.imageSet = (int32_t)spvc_compiler_get_decoration(comp, list[i].id, SpvDecorationDescriptorSet);
-			s->t.imageBinding = spvc_compiler_get_decoration(comp, list[i].id, SpvDecorationBinding);
-			s->t.samplerSet = -1;
-			s->fixedUnit = true;
+			for (unsigned k = 0; k < count; k++) {
+				Sampler *s = new_sampler(t);
+				if (!s) break;
+				if (count > 1) {
+					snprintf(s->name, sizeof(s->name), "%.100s_%u", list[i].name, k);
+					snprintf(s->array, sizeof(s->array), "%s", list[i].name);
+					s->arraySize = count;
+				} else {
+					snprintf(s->name, sizeof(s->name), "%s", list[i].name);
+				}
+				s->t.imageSet = (int32_t)spvc_compiler_get_decoration(comp, list[i].id, SpvDecorationDescriptorSet);
+				s->t.imageBinding = spvc_compiler_get_decoration(comp, list[i].id, SpvDecorationBinding);
+				s->t.imageElement = k;
+				s->t.samplerSet = -1;
+				/* the first element keeps its binding as texture unit where it can */
+				s->fixedUnit = k == 0;
+			}
 		}
 	}
 
@@ -231,6 +292,8 @@ static bool reflect(Tr *t, spvc_compiler comp, spvc_resources res) {
 			if (t->blockCount >= MAX_BLOCKS) { logf_(t->c, VKV_SPIRV_LOG_ERROR, "too many uniform blocks"); break; }
 			Block *b = &t->blocks[t->blockCount++];
 			block_name(comp, list[i].base_type_id, b->name, sizeof(b->name));
+			b->type = list[i].base_type_id;
+			b->cursor = 0;
 			if (k == 1) {
 				b->set = -1;
 				b->binding = 0;
@@ -262,7 +325,7 @@ static bool reflect(Tr *t, spvc_compiler comp, spvc_resources res) {
 /* ------------------------------------------------------------------------ */
 /* Rewriting                                                                */
 /* ------------------------------------------------------------------------ */
-static const Block *find_block(const Tr *t, const char *name) {
+static Block *find_block(Tr *t, const char *name) {
 	for (uint32_t i = 0; i < t->blockCount; i++)
 		if (!strcmp(t->blocks[i].name, name)) return &t->blocks[i];
 	return NULL;
@@ -302,8 +365,128 @@ static VkvSpirvScalar scalar_kind(const char *type, const char **suffix) {
 	return VKV_SPIRV_FLOAT;
 }
 
+/* Struct members of uniform blocks are flattened: every scalar, vector and
+ * matrix inside becomes its own uniform, and main starts by copying them into
+ * a static copy of the struct, so the rest of the shader is unchanged. */
+#define MAX_FLAT_LEAVES 256
+
+static bool flatten_leaf(Tr *t, Sb *o, spvc_type type, uint32_t offset, const char *path, const char *mangled,
+                         const Block *b, uint32_t *leaves) {
+	spvc_basetype bt = spvc_type_get_basetype(type);
+	unsigned vec = spvc_type_get_vector_size(type), cols = spvc_type_get_columns(type);
+	const char *base = bt == SPVC_BASETYPE_FP32 || bt == SPVC_BASETYPE_FP16 ? "float"
+	                 : bt == SPVC_BASETYPE_INT32 ? "int" : bt == SPVC_BASETYPE_UINT32 ? "uint"
+	                 : bt == SPVC_BASETYPE_BOOLEAN ? "bool" : NULL;
+	if (!base) {
+		logf_(t->c, VKV_SPIRV_LOG_WARN, "'%s' in block '%s' has a type that cannot be fed", path, b->name);
+		return true;
+	}
+	if (cols > 1 && cols != vec) {
+		logf_(t->c, VKV_SPIRV_LOG_WARN, "non-square matrix '%s' in block '%s' is declared but not fed", path, b->name);
+		return true;
+	}
+	if (cols > 1 && strcmp(base, "float")) {
+		logf_(t->c, VKV_SPIRV_LOG_WARN, "integer matrix '%s' in block '%s' is declared but not fed", path, b->name);
+		return true;
+	}
+	if (++*leaves > MAX_FLAT_LEAVES) {
+		logf_(t->c, VKV_SPIRV_LOG_ERROR, "block '%s' has more than %d values inside structs", b->name, MAX_FLAT_LEAVES);
+		return false;
+	}
+	char suffix[24] = "";
+	if (cols > 1) snprintf(suffix, sizeof(suffix), "%ux%u", cols, vec);
+	else if (vec > 1) snprintf(suffix, sizeof(suffix), "%u", vec);
+	sb_printf(o, "uniform float%s %s;\n", suffix, mangled);
+	if (!strcmp(base, "float")) sb_printf(&t->intInit, "    %s = %s;\n", path, mangled);
+	else if (!strcmp(base, "bool")) sb_printf(&t->intInit, "    %s = %s != 0.0f;\n", path, mangled);
+	else sb_printf(&t->intInit, "    %s = %s%s(%s);\n", path, base, suffix, mangled);
+	VkvSpirvScalar kind = !strcmp(base, "int") ? VKV_SPIRV_INT : !strcmp(base, "float") ? VKV_SPIRV_FLOAT : VKV_SPIRV_UINT;
+	return add_uniform(t, mangled, offset, b, kind);
+}
+
+static bool flatten(Tr *t, Sb *o, spvc_type_id id, uint32_t offset, uint32_t arrayStride, const char *path,
+                    const char *mangled, const Block *b, uint32_t *leaves, int depth) {
+	spvc_type type = spvc_compiler_get_type_handle(t->comp, id);
+	if (depth > 8) { logf_(t->c, VKV_SPIRV_LOG_ERROR, "structs nested too deep in block '%s'", b->name); return false; }
+	unsigned dims = spvc_type_get_num_array_dimensions(type);
+	if (dims > 1) {
+		logf_(t->c, VKV_SPIRV_LOG_WARN, "multidimensional array '%s' in block '%s' is declared but not fed", path,
+		      b->name);
+		return true;
+	}
+	if (dims == 1) {
+		if (!spvc_type_array_dimension_is_literal(type, 0)) {
+			logf_(t->c, VKV_SPIRV_LOG_WARN, "array '%s' in block '%s' has no fixed size, not fed", path, b->name);
+			return true;
+		}
+		unsigned n = spvc_type_get_array_dimension(type, 0);
+		spvc_type_id elem = spvc_type_get_base_type_id(type);
+		/* an array of arrays is rejected above, so the element is the base type */
+		for (unsigned k = 0; k < n; k++) {
+			char p2[256], m2[256];
+			snprintf(p2, sizeof(p2), "%s[%u]", path, k);
+			snprintf(m2, sizeof(m2), "%s_%u", mangled, k);
+			if (!flatten(t, o, elem, offset + k * arrayStride, 0, p2, m2, b, leaves, depth + 1)) return false;
+		}
+		return true;
+	}
+	if (spvc_type_get_basetype(type) != SPVC_BASETYPE_STRUCT)
+		return flatten_leaf(t, o, type, offset, path, mangled, b, leaves);
+	unsigned members = spvc_type_get_num_member_types(type);
+	for (unsigned m = 0; m < members; m++) {
+		unsigned moff = 0, mstride = 0;
+		spvc_compiler_type_struct_member_offset(t->comp, type, m, &moff);
+		spvc_type_id mid = spvc_type_get_member_type(type, m);
+		if (spvc_type_get_num_array_dimensions(spvc_compiler_get_type_handle(t->comp, mid)))
+			spvc_compiler_type_struct_member_array_stride(t->comp, type, m, &mstride);
+		const char *mn = spvc_compiler_get_member_name(t->comp, id, m);
+		char mbuf[32];
+		if (!mn || !*mn) { snprintf(mbuf, sizeof(mbuf), "_m%u", m); mn = mbuf; }
+		char p2[256], m2[256];
+		snprintf(p2, sizeof(p2), "%s.%s", path, mn);
+		snprintf(m2, sizeof(m2), "%s_%s", mangled, mn);
+		if (!flatten(t, o, mid, offset + moff, mstride, p2, m2, b, leaves, depth + 1)) return false;
+	}
+	return true;
+}
+
+/* Finds the block member a cbuffer line declares: members come in order and
+ * are called <instance>_<member>. */
+static int block_member(Tr *t, Block *b, const char *name) {
+	spvc_type type = spvc_compiler_get_type_handle(t->comp, b->type);
+	unsigned members = spvc_type_get_num_member_types(type);
+	for (unsigned pass = 0; pass < 2; pass++)
+		for (unsigned k = pass ? 0 : b->cursor; k < members; k++) {
+			const char *mn = spvc_compiler_get_member_name(t->comp, b->type, k);
+			size_t nl = strlen(name), ml = mn ? strlen(mn) : 0;
+			if (ml && nl > ml && name[nl - ml - 1] == '_' && !strcmp(name + nl - ml, mn)) {
+				b->cursor = k + 1;
+				return (int)k;
+			}
+		}
+	return -1;
+}
+
+static void emit_struct_member(Tr *t, Sb *o, const char *type, const char *name, const char *arr, Block *b) {
+	int k = block_member(t, b, name);
+	if (k < 0) {
+		logf_(t->c, VKV_SPIRV_LOG_WARN, "struct member '%s' in block '%s' was not found, not fed", name, b->name);
+		sb_printf(o, "uniform %s %s%s;\n", type, name, arr);
+		return;
+	}
+	spvc_type bt = spvc_compiler_get_type_handle(t->comp, b->type);
+	unsigned off = 0, stride = 0;
+	spvc_compiler_type_struct_member_offset(t->comp, bt, (unsigned)k, &off);
+	spvc_type_id mid = spvc_type_get_member_type(bt, (unsigned)k);
+	if (spvc_type_get_num_array_dimensions(spvc_compiler_get_type_handle(t->comp, mid)))
+		spvc_compiler_type_struct_member_array_stride(t->comp, bt, (unsigned)k, &stride);
+	sb_printf(o, "static %s %s%s;\n", type, name, arr);
+	uint32_t leaves = 0;
+	flatten(t, o, mid, off, stride, name, name, b, &leaves, 0);
+}
+
 /* One cbuffer member: "    row_major float4x4 pc_mvp : packoffset(c0);" */
-static void emit_cbuffer_member(Tr *t, Sb *o, const char *line, const Block *b) {
+static void emit_cbuffer_member(Tr *t, Sb *o, const char *line, Block *b) {
 	const char *s = skip_ws(line);
 	if (starts_with(s, "row_major ")) s += 10;
 	if (starts_with(s, "column_major ")) {
@@ -337,11 +520,10 @@ static void emit_cbuffer_member(Tr *t, Sb *o, const char *line, const Block *b) 
 	const char *suffix;
 	VkvSpirvScalar kind = scalar_kind(type, &suffix);
 	if (!suffix) {
-		logf_(t->c, VKV_SPIRV_LOG_WARN, "struct member '%s' of type %s in block '%s' is declared but not fed", name, type,
-		      b->name);
-		sb_printf(o, "uniform %s %s%s;\n", type, name, arr);
+		emit_struct_member(t, o, type, name, arr, b);
 		return;
 	}
+	block_member(t, b, name);
 	if (kind == VKV_SPIRV_FLOAT) {
 		sb_printf(o, "uniform %s %s%s;\n", type, name, arr);
 		add_uniform(t, name, offset, b, kind);
@@ -488,6 +670,85 @@ static char *fix_paren_literal_swizzles(const char *line) {
 	}
 }
 
+/* Matching closing bracket for the one at s[0]; NULL when unbalanced. */
+static const char *match_close(const char *s, char open, char close) {
+	int depth = 0;
+	for (const char *p = s; *p; p++) {
+		if (*p == open) depth++;
+		else if (*p == close && --depth == 0) return p;
+	}
+	return NULL;
+}
+
+static bool is_int_literal(const char *s, size_t n) {
+	while (n && (*s == ' ')) { s++; n--; }
+	while (n && (s[n - 1] == ' ' || s[n - 1] == 'u' || s[n - 1] == 'U')) n--;
+	if (!n) return false;
+	for (size_t i = 0; i < n; i++)
+		if (!isdigit((unsigned char)s[i])) return false;
+	return true;
+}
+
+/* tex[2] -> tex_2. A variable index picks the element in a chain of ?:
+ * around the call that samples it: tex2D(tex[i], uv) ->
+ * ((i) == 0 ? tex2D(tex_0, uv) : (i) == 1 ? tex2D(tex_1, uv) : tex2D(tex_2, uv)). */
+static char *rewrite_sampler_arrays(Tr *t, const char *line) {
+	char *cur = dupn(line, strlen(line));
+	for (uint32_t si = 0; si < t->samplerCount && cur; si++) {
+		const Sampler *smp = &t->samplers[si];
+		if (!smp->array[0] || strcmp(smp->name + strlen(smp->array), "_0")) continue; /* once per array */
+		const char *base = smp->array;
+		size_t bl = strlen(base);
+		for (int guard = 0; guard < 64; guard++) {
+			char *hit = strstr(cur, base);
+			while (hit && ((hit > cur && is_ident(hit[-1])) || hit[bl] != '[')) hit = strstr(hit + 1, base);
+			if (!hit) break;
+			const char *idxOpen = hit + bl, *idxClose = match_close(idxOpen, '[', ']');
+			if (!idxClose) break;
+			size_t il = (size_t)(idxClose - idxOpen - 1);
+			Sb n = { 0 };
+			if (is_int_literal(idxOpen + 1, il)) {
+				unsigned k = (unsigned)strtoul(skip_ws(idxOpen + 1), NULL, 10);
+				sb_add(&n, cur, (size_t)(hit - cur));
+				sb_printf(&n, "%s_%u", base, k);
+				sb_puts(&n, idxClose + 1);
+			} else {
+				/* the call around it: identifier, '(' and then the array */
+				const char *open = hit;
+				while (open > cur && open[-1] == ' ') open--;
+				if (open == cur || open[-1] != '(') {
+					logf_(t->c, VKV_SPIRV_LOG_ERROR, "sampler array '%s' is indexed outside a texture call", base);
+					free(cur);
+					return NULL;
+				}
+				open--;
+				const char *fn = open;
+				while (fn > cur && is_ident(fn[-1])) fn--;
+				const char *close = match_close(open, '(', ')');
+				if (fn == open || !close) {
+					logf_(t->c, VKV_SPIRV_LOG_ERROR, "could not rewrite the use of sampler array '%s'", base);
+					free(cur);
+					return NULL;
+				}
+				sb_add(&n, cur, (size_t)(fn - cur));
+				sb_puts(&n, "(");
+				for (uint32_t k = 0; k < smp->arraySize; k++) {
+					if (k + 1 < smp->arraySize) sb_printf(&n, "(%.*s) == %u ? ", (int)il, idxOpen + 1, (unsigned)k);
+					sb_printf(&n, "%.*s(%s_%u%.*s)", (int)(open - fn), fn, base, (unsigned)k, (int)(close - idxClose - 1),
+					          idxClose + 1);
+					if (k + 1 < smp->arraySize) sb_puts(&n, " : ");
+				}
+				sb_puts(&n, ")");
+				sb_puts(&n, close + 1);
+			}
+			if (n.oom) { free(n.p); free(cur); return NULL; }
+			free(cur);
+			cur = n.p;
+		}
+	}
+	return cur;
+}
+
 static void emit_signature(Tr *t, Sb *o) {
 	sb_puts(o, "void main(");
 	bool first = true;
@@ -527,7 +788,10 @@ static void emit_main_statement(Tr *t, Sb *o, const char *line) {
 	const char *s = skip_ws(line);
 	if (starts_with(s, "SPIRV_Cross_Output stage_output;") || starts_with(s, "return stage_output;")) return;
 
-	char *cur = replace_all(line, "stage_input.", "stage_input_", false);
+	char *arrays = rewrite_sampler_arrays(t, line);
+	if (!arrays) { if (!t->c->failed) o->oom = true; return; }
+	char *cur = replace_all(arrays, "stage_input.", "stage_input_", false);
+	free(arrays);
 	char *next = replace_all(cur, "stage_output.", "stage_output_", false);
 	free(cur);
 	cur = next;
@@ -581,6 +845,31 @@ static bool collect_struct(Tr *t, char **lines, size_t count, size_t *i, Io *dst
 	return true;
 }
 
+/* The GXM compiler has no unsigned types: uint becomes int and 1u becomes 1. */
+static char *drop_unsigned(char *src) {
+	static const char *const from[] = { "uint", "uint2", "uint3", "uint4" };
+	static const char *const to[] = { "int", "int2", "int3", "int4" };
+	char *cur = src;
+	for (int k = 0; k < 4 && cur; k++) {
+		char *n = replace_all(cur, from[k], to[k], true);
+		free(cur);
+		cur = n;
+	}
+	if (!cur) return NULL;
+	/* unsigned literal suffixes: digits followed by u or U, not part of a name */
+	char *w = cur;
+	for (char *r = cur; *r; r++) {
+		if ((*r == 'u' || *r == 'U') && r > cur && isdigit((unsigned char)r[-1]) && !is_ident(r[1])) {
+			const char *b = r - 1;
+			while (b > cur && (isalnum((unsigned char)b[-1]) || b[-1] == '.')) b--;
+			if (isdigit((unsigned char)*b)) continue; /* a number like 10u: skip the suffix */
+		}
+		*w++ = *r;
+	}
+	*w = 0;
+	return cur;
+}
+
 static char *rewrite(Tr *t, const char *hlsl) {
 	/* split into lines */
 	size_t count = 0, cap = 256;
@@ -624,7 +913,7 @@ static char *rewrite(Tr *t, const char *hlsl) {
 		if (starts_with(line, "cbuffer ")) {
 			char name[128];
 			sscanf(line + 8, "%127[^ \t:]", name);
-			const Block *b = find_block(t, name);
+			Block *b = find_block(t, name);
 			if (!b) { logf_(t->c, VKV_SPIRV_LOG_ERROR, "unknown uniform block '%s'", name); break; }
 			for (i++; i < count; i++) {
 				const char *m = skip_ws(lines[i]);
@@ -640,6 +929,20 @@ static char *rewrite(Tr *t, const char *hlsl) {
 			if (sscanf(line, "uniform %63s %159[^;];", type, name) != 2) {
 				logf_(t->c, VKV_SPIRV_LOG_ERROR, "unexpected sampler declaration: %s", line);
 				break;
+			}
+			char *br = strchr(name, '[');
+			if (br) {
+				/* a sampler array becomes one sampler per element */
+				*br = 0;
+				bool any = false;
+				for (uint32_t k = 0; k < t->samplerCount; k++)
+					if (!strcmp(t->samplers[k].array, name)) {
+						sb_printf(&o, "uniform %s %s : TEXUNIT%u;\n", type, t->samplers[k].name,
+						          (unsigned)t->samplers[k].t.unit);
+						any = true;
+					}
+				if (!any) { logf_(t->c, VKV_SPIRV_LOG_ERROR, "unknown sampler array '%s'", name); break; }
+				continue;
 			}
 			const Sampler *smp = find_sampler(t, name);
 			if (!smp) { logf_(t->c, VKV_SPIRV_LOG_ERROR, "unknown sampler '%s'", name); break; }
@@ -660,7 +963,16 @@ static char *rewrite(Tr *t, const char *hlsl) {
 			sb_puts(&o, "}\n");
 			continue;
 		}
-		char *fixed = fix_paren_literal_swizzles(line);
+		char *arrays = rewrite_sampler_arrays(t, line);
+		if (!arrays) { o.oom = !t->c->failed; break; }
+		char *fixed = fix_paren_literal_swizzles(arrays);
+		free(arrays);
+		/* the GXM compiler has no matrix layout qualifiers (struct members) */
+		if (fixed && strstr(fixed, "row_major ")) {
+			char *nf = replace_all(fixed, "row_major ", "", false);
+			free(fixed);
+			fixed = nf;
+		}
 		if (!fixed) { o.oom = true; break; }
 		fix_literal_swizzles(&o, fixed);
 		free(fixed);
@@ -669,7 +981,40 @@ static char *rewrite(Tr *t, const char *hlsl) {
 	free(lines);
 	free(text);
 	if (o.oom || t->c->failed) { free(o.p); return NULL; }
-	return o.p;
+	return drop_unsigned(o.p);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Names                                                                    */
+/* ------------------------------------------------------------------------ */
+/* Words the GXM Cg compiler reserves that SPIRV-Cross does not rename for
+ * HLSL, so a GLSL variable called "row" would not compile. */
+static const char *const k_cgKeywords[] = {
+	"row", "column", "fixed", "half", "packed", "emit", "get", "decl", "dword", "interface", "asm", "asm_fragment",
+	"pixelfragment", "vertexfragment", "pixelshader", "vertexshader", "sampler_state", "this", "template", "typename",
+	"typeid", "friend", "virtual", "mutable", "explicit", "operator", "namespace", "using", "private", "protected",
+	"public", "class", "new", "delete", "throw", "try", "catch", "goto", "union", "enum", "long", "short", "signed",
+	"char", "double", "auto", "extern", "register", "volatile", "inline", "sizeof", "static_cast", "const_cast",
+	"dynamic_cast", "reinterpret_cast", "compile", "technique", "pass", "string", "texture", "matrix", "vector",
+	"shared", "snorm", "unorm", "precise", "centroid", "nointerpolation", "noperspective", "linear", "sample",
+	"discard", "in", "out", "inout", "uniform", "varying",
+};
+
+static bool is_cg_keyword(const char *n) {
+	for (size_t i = 0; i < sizeof(k_cgKeywords) / sizeof(k_cgKeywords[0]); i++)
+		if (!strcmp(n, k_cgKeywords[i])) return true;
+	return false;
+}
+
+static void rename_keywords(Tr *t, spvc_compiler comp, uint32_t bound) {
+	for (uint32_t id = 1; id < bound; id++) {
+		const char *n = spvc_compiler_get_name(comp, id);
+		if (!n || !*n || !is_cg_keyword(n)) continue;
+		char renamed[64];
+		snprintf(renamed, sizeof(renamed), "%s_vkv", n);
+		logf_(t->c, VKV_SPIRV_LOG_INFO, "'%s' is a Cg keyword, renamed to '%s'", n, renamed);
+		spvc_compiler_set_name(comp, id, renamed);
+	}
 }
 
 /* ------------------------------------------------------------------------ */
@@ -742,6 +1087,7 @@ int vkv_spirv_translate(const uint32_t *words, size_t wordCount, VkvSpirvStage s
 		goto done;
 	}
 	if (spvc_compiler_set_entry_point(comp, epName, want) != SPVC_SUCCESS) goto done;
+	rename_keywords(t, comp, (uint32_t)words[3]);
 
 	if (spvc_compiler_create_compiler_options(comp, &opts) != SPVC_SUCCESS) goto done;
 	spvc_compiler_options_set_uint(opts, SPVC_COMPILER_OPTION_HLSL_SHADER_MODEL, 30);
@@ -751,6 +1097,7 @@ int vkv_spirv_translate(const uint32_t *words, size_t wordCount, VkvSpirvStage s
 	if (spvc_compiler_install_compiler_options(comp, opts) != SPVC_SUCCESS) goto done;
 
 	if (spvc_compiler_create_shader_resources(comp, &res) != SPVC_SUCCESS) goto done;
+	t->comp = comp;
 	if (!reflect(t, comp, res)) goto done;
 
 	if (spvc_compiler_compile(comp, &hlsl) != SPVC_SUCCESS || !hlsl) goto done;

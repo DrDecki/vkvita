@@ -53,9 +53,23 @@ Nothing from the sections below has to be done by hand:
   sampler pair used in the shader gets its own texture unit, and VkVita
   builds the texture from both descriptors at draw time.
 
+- Structs in uniform blocks (arrays of structs, nested structs, arrays and
+  matrices inside them) are fed too: every value inside becomes its own
+  uniform at its std140 offset, and `main` copies them into the struct
+  before the shader runs. Non-square matrices and multidimensional arrays
+  inside structs are not fed (a warning names them).
+- Sampler arrays and arrays of separate images (`sampler2D t[4]`,
+  `texture2D t[4]` with a sampler) take one texture unit per element. A
+  constant index reads the unit directly, a variable index chooses among
+  the elements around the texture call. Descriptor arrays are read element
+  by element.
+- Names that are keywords in the GXM Cg compiler (`row`, `column`, `half`,
+  `fixed`, `sample` and more) are renamed with a `_vkv` suffix. Unsigned
+  types become signed ones, since the compiler has no `uint`.
+
 Not supported (the translation fails with a message naming the resource):
-sampler arrays, storage buffers and images, compute and geometry stages. Struct
-members inside uniform blocks are declared but not fed yet.
+storage buffers and images, compute and geometry stages, more than 16
+textures in one stage.
 
 With `debug = shaders` the log contains the generated Cg (lines starting with
 `cg-src[name:line]`), which is what to look at when the Cg compiler reports

@@ -381,8 +381,10 @@ typedef struct VkvTexBinding {
 	uint32_t unit;
 	int32_t  imageSet;
 	uint32_t imageBinding;
+	uint32_t imageElement;
 	int32_t  samplerSet;
 	uint32_t samplerBinding;
+	uint32_t samplerElement;
 } VkvTexBinding;
 
 typedef struct VkvUniformMap {
@@ -539,7 +541,7 @@ typedef struct VkFramebuffer_T {
 	SceGxmRenderTarget *rt;
 } VkvFramebuffer;
 
-#define VKV_MAX_UNIFORM_MAP 64
+#define VKV_MAX_UNIFORM_MAP 192
 
 typedef struct VkPipeline_T {
 	VkvObject                 obj;

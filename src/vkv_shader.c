@@ -346,6 +346,8 @@ static SceGxmProgram *vkv_spirv_compile(struct VkDevice_T *dev, VkvShaderModule 
 			m->texb[stage][i].imageBinding = r.texs[i].imageBinding;
 			m->texb[stage][i].samplerSet = r.texs[i].samplerSet;
 			m->texb[stage][i].samplerBinding = r.texs[i].samplerBinding;
+			m->texb[stage][i].imageElement = r.texs[i].imageElement;
+			m->texb[stage][i].samplerElement = r.texs[i].samplerElement;
 		}
 		if (ok) m->texCount[stage] = r.texCount;
 	}

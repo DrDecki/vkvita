@@ -268,6 +268,25 @@ SceGxmProgram *shark_compile_shader_extended(const char *src, uint32_t *size, sh
 			g_sharkLog("does not support integer divides with arbitrary denominators", SHARK_LOG_ERROR, 1);
 		return NULL;
 	}
+	/* like the real compiler: there is no uint type */
+	for (const char *k = strstr(src, "uint"); k; k = strstr(k + 1, "uint")) {
+		int before = k > src && (isalnum((unsigned char)k[-1]) || k[-1] == '_');
+		int after = k[4] && strchr("234", k[4]) ? isalnum((unsigned char)k[5]) || k[5] == '_'
+		                                        : isalnum((unsigned char)k[4]) || k[4] == '_';
+		if (!before && !after) {
+			if (g_sharkLog) g_sharkLog("expected type specifier, but found 'identifier' instead (uint)", SHARK_LOG_ERROR, 1);
+			return NULL;
+		}
+	}
+	/* like the real compiler: "row" is a keyword */
+	for (const char *k = strstr(src, "row"); k; k = strstr(k + 1, "row")) {
+		int before = k > src && (isalnum((unsigned char)k[-1]) || k[-1] == '_');
+		int after = isalnum((unsigned char)k[3]) || k[3] == '_';
+		if (!before && !after) {
+			if (g_sharkLog) g_sharkLog("expected an identifier but found keyword 'row'", SHARK_LOG_ERROR, 1);
+			return NULL;
+		}
+	}
 	SceGxmProgram *p = calloc(1, sizeof(*p));
 	memcpy(p->magic, "GXP", 4);
 	p->type = type == SHARK_VERTEX_SHADER ? SCE_GXM_VERTEX_PROGRAM : SCE_GXM_FRAGMENT_PROGRAM;

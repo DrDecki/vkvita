@@ -36,8 +36,10 @@ typedef struct VkvSpirvTexture {
 	uint32_t unit;
 	int32_t  imageSet;
 	uint32_t imageBinding;
+	uint32_t imageElement;   /* array element of the image descriptor */
 	int32_t  samplerSet;
 	uint32_t samplerBinding;
+	uint32_t samplerElement;
 } VkvSpirvTexture;
 
 typedef struct VkvSpirvResult {
