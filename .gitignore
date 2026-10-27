@@ -5,3 +5,4 @@ build*/
 eboot.bin
 param.sfo
 *.o
+*.log
