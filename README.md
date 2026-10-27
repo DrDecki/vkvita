@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.svg">
-    <img src="docs/logo.svg" alt="VkVita" width="420">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/vkvita-logo-dark.svg">
+    <img src="docs/vkvita-logo.svg" alt="VkVita" width="420">
   </picture>
 </p>
 
