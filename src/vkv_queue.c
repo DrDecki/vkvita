@@ -18,6 +18,10 @@ typedef struct VkvReplay {
 	SceGxmColorSurface        color;
 	SceGxmDepthStencilSurface depth;
 	bool                      splits;
+	uint32_t                  sceneDraws;
+	bool                      sceneClearsDepth;
+	float                     sceneDepth;
+	uint32_t                  sceneStencil;
 	uint32_t                  scenesLeft;
 	VkvFence                 *fence;
 	bool                      fenceAttached;
@@ -148,6 +152,9 @@ static void vkv_clear_color_rect(VkvReplay *R, VkvImage *img, uint32_t level, ui
 static void vkv_begin_scene(VkvReplay *R, bool loadDepth, bool clearDepth, float depth, uint32_t stencil) {
 	VkvRenderPass *rp = R->rp;
 	VkvFramebuffer *fb = R->fb;
+	if (R->depthImg && VKV_CHECK(R->depthImg->samples == rp->samples, "depth attachment has %u samples, the render pass %u",
+	                             (unsigned)R->depthImg->samples, (unsigned)rp->samples))
+		R->depthImg = NULL;
 	if (R->depthImg && R->depthImg->pendingDepthClear) {
 		if (loadDepth || !clearDepth) {
 			loadDepth = false;
@@ -157,6 +164,10 @@ static void vkv_begin_scene(VkvReplay *R, bool loadDepth, bool clearDepth, float
 		}
 		R->depthImg->pendingDepthClear = false;
 	}
+	R->sceneDraws = 0;
+	R->sceneClearsDepth = R->depthImg && clearDepth;
+	R->sceneDepth = depth;
+	R->sceneStencil = stencil;
 	if (R->depthImg) {
 		const VkvSubpass *sp = &rp->sub[R->subpass];
 		const VkvAttachmentDesc *a = &rp->att[sp->depth];
@@ -180,9 +191,10 @@ static void vkv_begin_scene(VkvReplay *R, bool loadDepth, bool clearDepth, float
 		                                                : SCE_GXM_OUTPUT_REGISTER_SIZE_32BIT;
 		uint32_t level = R->colorView ? R->colorView->baseLevel : 0;
 		uint32_t layer = R->colorView ? R->colorView->baseLayer : 0;
-		int r = sceGxmColorSurfaceInit(&R->color, cf, SCE_GXM_COLOR_SURFACE_LINEAR, SCE_GXM_COLOR_SURFACE_SCALE_NONE,
-		                               rs, fb->width, fb->height, img->levelPitch[level] / img->fi->bpp,
-		                               vkv_image_level_ptr(img, level, layer));
+		SceGxmColorSurfaceScaleMode scale = rp->samples > 1 ? SCE_GXM_COLOR_SURFACE_SCALE_MSAA_DOWNSCALE
+		                                                    : SCE_GXM_COLOR_SURFACE_SCALE_NONE;
+		int r = sceGxmColorSurfaceInit(&R->color, cf, SCE_GXM_COLOR_SURFACE_LINEAR, scale, rs, fb->width, fb->height,
+		                               img->levelPitch[level] / img->fi->bpp, vkv_image_level_ptr(img, level, layer));
 		if (r < 0) VKV_ERROR("sceGxmColorSurfaceInit failed 0x%08X", (unsigned)r);
 		const VkvFormatInfo *vf = R->colorView ? vkv_format(R->colorView->format) : img->fi;
 		if (vf && vf->srgb) sceGxmColorSurfaceSetGammaMode(&R->color, SCE_GXM_COLOR_SURFACE_GAMMA_BGR);
@@ -220,6 +232,12 @@ static void vkv_end_scene(VkvReplay *R, bool final) {
 	if (r < 0) VKV_ERROR("sceGxmEndScene failed 0x%08X", (unsigned)r);
 	R->inScene = false;
 	R->dev->gpuBusy = true;
+	if (R->depthImg && R->sceneClearsDepth && !R->sceneDraws) {
+		R->depthImg->pendingDepthClear = true;
+		R->depthImg->clearDepth = R->sceneDepth;
+		R->depthImg->clearStencil = R->sceneStencil;
+		return;
+	}
 	if (R->depthImg) R->depthImg->written = true;
 }
 
@@ -239,7 +257,7 @@ static void vkv_start_subpass(VkvReplay *R, uint32_t idx, const uint8_t *next, c
 	const VkvCmdBeginRP *c = R->begin;
 	const VkvSubpass *sp = &rp->sub[idx];
 	R->subpass = idx;
-	R->colorView = sp->color >= 0 ? fb->views[sp->color] : NULL;
+	R->colorView = sp->resolve >= 0 ? fb->views[sp->resolve] : sp->color >= 0 ? fb->views[sp->color] : NULL;
 	R->colorImg = R->colorView ? R->colorView->image : NULL;
 	R->depthImg = sp->depth >= 0 ? fb->views[sp->depth]->image : NULL;
 	R->splits = vkv_pass_has_splits(next, end);
@@ -654,6 +672,7 @@ static void vkv_exec_draw(VkvReplay *R, const VkvCmdDraw *c, bool indexed) {
 		if (p->fDefaultSize && sceGxmReserveFragmentDefaultUniformBuffer(R->ctx, &ub) >= 0)
 			vkv_write_uniforms(R, ub, p->funi, p->funiCount, p->fname);
 
+		R->sceneDraws++;
 		int r = sceGxmDraw(R->ctx, p->prim, ifmt, indices, c->count);
 		if (r < 0) VKV_ERROR("sceGxmDraw failed 0x%08X (pipeline '%s')", (unsigned)r, p->vname);
 		g_vkv.cur.drawCalls++;
@@ -674,6 +693,7 @@ static void vkv_exec_ff_draw(VkvReplay *R, const VkvCmdFFDraw *c) {
 	if (p->fDefaultSize && sceGxmReserveFragmentDefaultUniformBuffer(R->ctx, &ub) >= 0 && c->alphaRefParam)
 		sceGxmSetUniformDataF(ub, c->alphaRefParam, 0, 1, &c->alphaRef);
 	if (c->textured) sceGxmSetFragmentTexture(R->ctx, 0, &c->tex);
+	R->sceneDraws++;
 	sceGxmDraw(R->ctx, c->prim, SCE_GXM_INDEX_FORMAT_U16, R->dev->linearIdx16.base, c->count);
 	g_vkv.cur.drawCalls++;
 	g_vkv.cur.ffDraws++;

@@ -288,6 +288,7 @@ typedef struct VkImage_T {
 	const VkvFormatInfo  *fi;
 	uint32_t              width, height;
 	uint32_t              mipLevels, arrayLayers;
+	uint32_t              samples;
 	uint32_t              levels, layers;
 	VkImageUsageFlags     usage;
 	VkImageTiling         tiling;
@@ -311,6 +312,7 @@ typedef struct VkImage_T {
 } VkvImage;
 
 uint32_t vkv_swizzle_index(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+SceGxmMultisampleMode vkv_gxm_multisample(uint32_t samples);
 uint32_t vkv_image_level_width(const VkvImage *img, uint32_t level);
 uint32_t vkv_image_level_height(const VkvImage *img, uint32_t level);
 void     vkv_image_level_elems(const VkvImage *img, uint32_t level, uint32_t *ew, uint32_t *eh);
@@ -456,6 +458,7 @@ typedef struct VkvAttachmentDesc {
 	VkFormat            format;
 	VkAttachmentLoadOp  loadOp, stencilLoadOp;
 	VkAttachmentStoreOp storeOp, stencilStoreOp;
+	uint32_t            samples;
 } VkvAttachmentDesc;
 
 #define VKV_MAX_SUBPASSES 8
@@ -464,6 +467,7 @@ typedef struct VkvAttachmentDesc {
 
 typedef struct VkvSubpass {
 	int32_t  color, depth;
+	int32_t  resolve;
 	int32_t  input[VKV_MAX_INPUTS];
 	uint32_t inputCount;
 	bool     newScene;
@@ -479,6 +483,7 @@ typedef struct VkRenderPass_T {
 	uint32_t          subpassCount;
 	VkvSubpass        sub[VKV_MAX_SUBPASSES];
 	int8_t            firstUse[8], lastUse[8];
+	uint32_t          samples;
 } VkvRenderPass;
 
 typedef struct VkFramebuffer_T {
@@ -498,6 +503,7 @@ typedef struct VkPipeline_T {
 	VkvPipelineLayout        *layout;
 	VkvRenderPass            *rp;
 	uint32_t                  subpass;
+	uint32_t                  samples;
 	const SceGxmProgram      *vprog, *fprog;
 	SceGxmShaderPatcherId     vpid, fpid;
 	VkvShaderModule          *vmod, *fmod;
