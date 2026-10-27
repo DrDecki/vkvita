@@ -826,6 +826,8 @@ VkResult vkv_create_pipeline(struct VkDevice_T *dev, const VkGraphicsPipelineCre
 	switch (topo) {
 	case VK_PRIMITIVE_TOPOLOGY_POINT_LIST:     p->prim = SCE_GXM_PRIMITIVE_POINTS; p->polyMode = SCE_GXM_POLYGON_MODE_POINT_01UV; break;
 	case VK_PRIMITIVE_TOPOLOGY_LINE_LIST:      p->prim = SCE_GXM_PRIMITIVE_LINES;  p->polyMode = SCE_GXM_POLYGON_MODE_LINE; break;
+	case VK_PRIMITIVE_TOPOLOGY_LINE_STRIP:     p->prim = SCE_GXM_PRIMITIVE_LINES;  p->polyMode = SCE_GXM_POLYGON_MODE_LINE;
+	                                           p->lineStrip = true; break;
 	case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST:  p->prim = SCE_GXM_PRIMITIVE_TRIANGLES; break;
 	case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP: p->prim = SCE_GXM_PRIMITIVE_TRIANGLE_STRIP; break;
 	case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN:   p->prim = SCE_GXM_PRIMITIVE_TRIANGLE_FAN; break;

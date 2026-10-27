@@ -228,6 +228,9 @@ struct VkDevice_T {
 	uint32_t              linearIdx16Count;
 	VkvGpuBlock           linearIdx32;
 	uint32_t              linearIdx32Count;
+	VkvGpuBlock           stripIdx16;
+	VkvGpuBlock           stripRing;
+	uint32_t              stripRingPos, stripRingScene;
 
 	bool                  sharkReady;
 	bool                  sharkTried;
@@ -252,6 +255,8 @@ struct VkDevice_T {
 void vkv_clear_programs_free(struct VkDevice_T *d);
 
 #define VKV_GPU_CORES 4
+#define VKV_STRIP_PAIRS   65535u
+#define VKV_STRIP_RING    (256u * 1024u)
 
 typedef struct VkQueryPool_T {
 	VkvObject   obj;
@@ -565,6 +570,7 @@ typedef struct VkPipeline_T {
 
 	SceGxmPrimitiveType       prim;
 	bool                      primSupported;
+	bool                      lineStrip;
 	SceGxmCullMode            cull;
 	VkCullModeFlags           vkCull;
 	VkFrontFace               vkFront;
