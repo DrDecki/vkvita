@@ -25,6 +25,7 @@ typedef enum VkvSpirvScalar { VKV_SPIRV_FLOAT = 0, VKV_SPIRV_INT = 1, VKV_SPIRV_
 typedef struct VkvSpirvUniform {
 	char          *name;
 	uint32_t       offset;
+	uint32_t       stride;   /* bytes between array elements in the buffer, 0 = not an array */
 	int32_t        set;
 	uint32_t       binding;
 	VkvSpirvScalar scalar;
@@ -56,6 +57,8 @@ typedef void (*VkvSpirvLogFn)(VkvSpirvLogLevel level, const char *msg, void *use
 
 int  vkv_spirv_translate(const uint32_t *words, size_t wordCount, VkvSpirvStage stage, VkvSpirvLogFn log, void *user,
                          VkvSpirvResult *out);
+/* Elements given to runtime arrays in read-only storage buffers (default 64). */
+void vkv_spirv_set_storage_array_size(uint32_t elements);
 void vkv_spirv_free(VkvSpirvResult *r);
 
 /* Rewrites subpass inputs into textures sampled at the current pixel.
@@ -67,6 +70,18 @@ int vkv_spirv_lower_subpass(const uint32_t *words, size_t wordCount, uint32_t **
  * vkv_vertex_index, vkv_instance_index and vkv_point_coord. Same return
  * values as vkv_spirv_lower_subpass. */
 int vkv_spirv_lower_builtins(const uint32_t *words, size_t wordCount, uint32_t **outWords, size_t *outCount);
+
+/* Rewrites read-only storage buffers as uniform blocks, with arraySize
+ * elements for a runtime array. Same return values as above. */
+/* An array at the end of a storage buffer or push constant block whose
+ * std430 stride and offset were widened to 16 bytes so the block can be
+ * written as a cbuffer. */
+typedef struct VkvSpirvStride {
+	uint32_t structId, member, stride, offset; /* the std430 stride and offset */
+} VkvSpirvStride;
+
+int vkv_spirv_lower_ssbo(const uint32_t *words, size_t wordCount, uint32_t arraySize, uint32_t **outWords,
+                         size_t *outCount, VkvSpirvStride *strides, uint32_t *strideCount, uint32_t maxStrides);
 
 /* Rewrites integer division and remainder as float math, which the GXM
  * compiler accepts with any denominator. Same return values as above. */

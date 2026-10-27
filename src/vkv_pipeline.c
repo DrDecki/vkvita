@@ -35,9 +35,11 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDescriptorSetLayout(VkDevice device, cons
 		case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
 		case VK_DESCRIPTOR_TYPE_SAMPLER:
 		case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+		case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:         /* read-only use in shaders */
+		case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
 			break;
 		default:
-			VKV_UNSUPPORTED("storage and texel buffer descriptors");
+			VKV_UNSUPPORTED("storage image and texel buffer descriptors");
 			break;
 		}
 		if (b->pImmutableSamplers && b->descriptorCount &&
@@ -58,7 +60,9 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDescriptorSetLayout(VkDevice device, cons
 	for (uint32_t i = 0; i < l->bindingCount; i++) {
 		l->bindings[i].first = first;
 		first += l->bindings[i].count;
-		if (l->bindings[i].type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC) {
+		/* dynamic offsets are given in binding order for both kinds */
+		if (l->bindings[i].type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC ||
+		    l->bindings[i].type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC) {
 			l->bindings[i].dynIndex = dyn;
 			dyn += l->bindings[i].count;
 		}
@@ -197,7 +201,9 @@ VKAPI_ATTR void VKAPI_CALL vkUpdateDescriptorSets(VkDevice device, uint32_t writ
 				continue;
 			switch (wr->descriptorType) {
 			case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
-			case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC: {
+			case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+			case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+			case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC: {
 				const VkDescriptorBufferInfo *bi = &wr->pBufferInfo[i];
 				d->buffer = VKV_ND(VkvBuffer, bi->buffer);
 				d->offset = (uint32_t)bi->offset;

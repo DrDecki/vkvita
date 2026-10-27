@@ -508,9 +508,8 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateBuffer(VkDevice device, const VkBufferCre
 	VKV_TRACE("vkCreateBuffer");
 	(void)device; (void)alloc;
 	if (VKV_CHECK(ci->size > 0, "buffer size is 0")) return VK_ERROR_INITIALIZATION_FAILED;
-	if (ci->usage & (VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT |
-	                 VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT))
-		VKV_UNSUPPORTED("storage/texel buffer usage (buffer created, but those uses will not work)");
+	if (ci->usage & (VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT))
+		VKV_UNSUPPORTED("texel buffer usage (buffer created, but texel buffers will not work)");
 	VkvBuffer *b = calloc(1, sizeof(*b));
 	if (!b) return VK_ERROR_OUT_OF_HOST_MEMORY;
 	b->obj.magic = VKV_MAGIC_BUFFER;

@@ -1,17 +1,21 @@
 /*
  * VkVita sample: shader_tests
  *
- * Eight tiles, each one checking a shader feature inside the fragment
+ * Twelve tiles, each one checking a shader feature inside the fragment
  * shader: green when the value it read is the expected one, red when not.
  *
- *   top row     struct members in a uniform block: a vec4 and a float in an
+ *   first row   struct members in a uniform block: a vec4 and a float in an
  *               array of structs, int members, a nested struct with an
  *               array inside, a mat4 inside a struct
- *   bottom row  a sampler array with a constant index, the same array with
+ *   second row  a sampler array with a constant index, the same array with
  *               an index from a push constant, an array of separate images
  *               with one sampler, and the plain members after the structs
+ *   third row   read-only storage buffers: a runtime array of mat4 that is
+ *               only partly filled, a tightly packed float array, an array
+ *               of structs after a header, and a float array in push
+ *               constants (std430, 4 bytes apart)
  *
- * Expected picture: eight green tiles.
+ * Expected picture: twelve green tiles.
  *
  * Regenerate the shader headers after editing shaders/:
  *   glslangValidator -V --vn k_tile_vert_spv shaders/tile.vert -o tile_vert_spv.h
@@ -126,6 +130,23 @@ int main(void) {
 	put_f(ubo, 208, amb, 3);
 	put_i(ubo, 220, 1);
 
+	/* --- storage buffers (std430) ------------------------------------------- */
+	VkBuffer sbuf[3];
+	VkDeviceMemory smem[3];
+	float *sp[3];
+	const VkDeviceSize ssize[3] = { 2 * 64, 8 * 4, 16 + 3 * 32 };
+	for (int i = 0; i < 3; i++) {
+		sample_create_buffer(&s, ssize[i], VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+		                     &sbuf[i], &smem[i], (void **)&sp[i]);
+		memset(sp[i], 0, ssize[i]);
+	}
+	mat4_identity(sp[0]);
+	mat4_translate(sp[0] + 16, 4.0f, 5.0f, 6.0f); /* bones[1]; the shader array has 64, the buffer 2 */
+	for (int k = 0; k < 8; k++) sp[1][k] = (float)k + 0.5f;
+	const float header[4] = { 1, 2, 3, 4 };
+	memcpy(sp[2], header, sizeof(header));
+	for (int k = 0; k < 3; k++) sp[2][4 + k * 8 + 4] = 0.25f * (float)(k + 1); /* items[k].b at 16 + 32k + 16 */
+
 	/* --- textures: three for the sampler array, two for the image array ---- */
 	static const uint8_t colors[5][4] = { { 255, 0, 0, 255 }, { 0, 255, 0, 255 }, { 0, 0, 255, 255 },
 	                                      { 255, 0, 255, 255 }, { 255, 255, 0, 255 } };
@@ -138,24 +159,28 @@ int main(void) {
 	VK_CHECK(vkCreateSampler(s.device, &sci, NULL, &sampler));
 
 	/* --- descriptors ---------------------------------------------------------- */
-	VkDescriptorSetLayoutBinding lb[4] = {
+	VkDescriptorSetLayoutBinding lb[7] = {
 		{ 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
 		{ 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
 		{ 2, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 2, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
 		{ 3, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
+		{ 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
+		{ 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
+		{ 6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
 	};
 	VkDescriptorSetLayoutCreateInfo dlci = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-	dlci.bindingCount = 4;
+	dlci.bindingCount = 7;
 	dlci.pBindings = lb;
 	VkDescriptorSetLayout setLayout;
 	VK_CHECK(vkCreateDescriptorSetLayout(s.device, &dlci, NULL, &setLayout));
-	VkDescriptorPoolSize ps[4] = {
+	VkDescriptorPoolSize ps[5] = {
 		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 }, { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3 },
 		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 2 }, { VK_DESCRIPTOR_TYPE_SAMPLER, 1 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3 },
 	};
 	VkDescriptorPoolCreateInfo dpci = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
 	dpci.maxSets = 1;
-	dpci.poolSizeCount = 4;
+	dpci.poolSizeCount = 5;
 	dpci.pPoolSizes = ps;
 	VkDescriptorPool dpool;
 	VK_CHECK(vkCreateDescriptorPool(s.device, &dpci, NULL, &dpool));
@@ -167,14 +192,16 @@ int main(void) {
 	VK_CHECK(vkAllocateDescriptorSets(s.device, &dsai, &set));
 
 	VkDescriptorBufferInfo dbi = { ubuf, 0, 256 };
+	VkDescriptorBufferInfo sbi[3];
+	for (int i = 0; i < 3; i++) sbi[i] = (VkDescriptorBufferInfo){ sbuf[i], 0, VK_WHOLE_SIZE };
 	VkDescriptorImageInfo combined[3], images[2], samp = { sampler, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED };
 	for (int i = 0; i < 3; i++)
 		combined[i] = (VkDescriptorImageInfo){ sampler, tex[i].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
 	for (int i = 0; i < 2; i++)
 		images[i] = (VkDescriptorImageInfo){ VK_NULL_HANDLE, tex[3 + i].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-	VkWriteDescriptorSet wr[4];
+	VkWriteDescriptorSet wr[7];
 	memset(wr, 0, sizeof(wr));
-	for (int i = 0; i < 4; i++) {
+	for (int i = 0; i < 7; i++) {
 		wr[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		wr[i].dstSet = set;
 		wr[i].dstBinding = (uint32_t)i;
@@ -185,10 +212,11 @@ int main(void) {
 	wr[1].pImageInfo = combined;
 	wr[2].pImageInfo = images;
 	wr[3].pImageInfo = &samp;
-	vkUpdateDescriptorSets(s.device, 4, wr, 0, NULL);
+	for (int i = 0; i < 3; i++) wr[4 + i].pBufferInfo = &sbi[i];
+	vkUpdateDescriptorSets(s.device, 7, wr, 0, NULL);
 
 	/* --- pipeline: the tile comes from push constants, no vertex buffer ----- */
-	VkPushConstantRange range = { VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 8 };
+	VkPushConstantRange range = { VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 24 };
 	VkPipelineLayoutCreateInfo plci = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
 	plci.setLayoutCount = 1;
 	plci.pSetLayouts = &setLayout;
@@ -249,13 +277,14 @@ int main(void) {
 		vkCmdSetScissor(cb, 0, 1, &sc);
 		vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
 		vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &set, 0, NULL);
-		for (int32_t tile = 0; tile < 8; tile++) {
-			int32_t push[2] = { tile, 1 };
-			vkCmdPushConstants(cb, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 8, push);
+		for (int32_t tile = 0; tile < 12; tile++) {
+			struct { int32_t tile, which; float weights[4]; } push = { tile, 1, { 1.0f, 0.5f, 0.25f, 0.125f } };
+			vkCmdPushConstants(cb, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push),
+			                   &push);
 			vkCmdDraw(cb, 6, 1, 0, 0);
 		}
 		sample_end_frame(&s);
-		if (++frameNo == 60) vkvLog(VKV_LOG_WARN, "shader_tests: running, eight green tiles expected");
+		if (++frameNo == 60) vkvLog(VKV_LOG_WARN, "shader_tests: running, twelve green tiles expected");
 	}
 
 	vkDeviceWaitIdle(s.device);
@@ -267,6 +296,10 @@ int main(void) {
 	for (int i = 0; i < 5; i++) destroy_texture(&s, &tex[i]);
 	vkDestroyBuffer(s.device, ubuf, NULL);
 	vkFreeMemory(s.device, umem, NULL);
+	for (int i = 0; i < 3; i++) {
+		vkDestroyBuffer(s.device, sbuf[i], NULL);
+		vkFreeMemory(s.device, smem[i], NULL);
+	}
 	sample_shutdown(&s);
 	sceKernelExitProcess(0);
 	return 0;

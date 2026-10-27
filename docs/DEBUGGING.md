@@ -39,6 +39,7 @@ pool_max_alloc_kb   = 512     # allocations up to this size are pooled
 scenes_per_frame    = 4       # render target hint
 ff_buffer_kb        = 1024    # fixed-function streaming buffer per frame
 ff_frames           = 3       # fixed-function frames in flight
+storage_array_size  = 64      # elements of a runtime array in a read-only storage buffer
 ```
 
 Flag values can also be numbers (`debug = 0x0d`).

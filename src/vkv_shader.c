@@ -247,6 +247,13 @@ uint32_t vkv_build_uniform_map(const VkvShaderModule *m, const SceGxmProgram *p,
 		uint32_t off = explicitOff >= 0 ? (uint32_t)explicitOff : VKV_ALIGN(cursor, align);
 		if (explicitOff < 0) cursor = off + size;
 		int8_t set = src >= 0 && m->uniSet ? m->uniSet[src] : -1;
+		/* SPIR-V knows the real array stride: std430 packs float and vec2 arrays
+		 * tighter than 16 bytes. Wider strides already match, and the program may
+		 * list a matrix array as rows, where the SPIR-V stride would be per matrix. */
+		if (arr > 1 && src >= 0 && m->uniStride && m->uniStride[src] && m->uniStride[src] < stride) {
+			stride = m->uniStride[src];
+			size = stride * arr;
+		}
 
 		if (sceGxmProgramParameterGetType(pp) != SCE_GXM_PARAMETER_TYPE_F32) {
 			VKV_WARN("shader '%s': uniform '%s' is not float; push constants only feed float uniforms", m->name, name);
@@ -278,7 +285,7 @@ uint32_t vkv_build_uniform_map(const VkvShaderModule *m, const SceGxmProgram *p,
 /* SPIR-V                                                                   */
 /* ------------------------------------------------------------------------ */
 static bool vkv_shader_add_uniform(VkvShaderModule *m, const char *name, uint32_t offset, int8_t set, uint8_t binding,
-                                   uint8_t scalar) {
+                                   uint8_t scalar, uint16_t stride) {
 	for (uint32_t u = 0; u < m->uniCount; u++)
 		if (m->unis[u].name && !strcmp(m->unis[u].name, name)) return true;
 	uint32_t n = m->uniCount + 1;
@@ -290,12 +297,15 @@ static bool vkv_shader_add_uniform(VkvShaderModule *m, const char *name, uint32_
 	if (bindings) m->uniBinding = bindings;
 	uint8_t *scalars = realloc(m->uniScalar, n);
 	if (scalars) m->uniScalar = scalars;
-	if (!unis || !sets || !bindings || !scalars) return false;
+	uint16_t *strides = realloc(m->uniStride, n * sizeof(uint16_t));
+	if (strides) m->uniStride = strides;
+	if (!unis || !sets || !bindings || !scalars || !strides) return false;
 	m->unis[m->uniCount].name = vkv_strdup(name);
 	m->unis[m->uniCount].offset = offset;
 	m->uniSet[m->uniCount] = set;
 	m->uniBinding[m->uniCount] = binding;
 	m->uniScalar[m->uniCount] = scalar;
+	m->uniStride[m->uniCount] = stride;
 	m->uniCount = n;
 	return m->unis[n - 1].name != NULL;
 }
@@ -322,6 +332,7 @@ static void vkv_log_source(const char *name, const char *src) {
 static SceGxmProgram *vkv_spirv_compile(struct VkDevice_T *dev, VkvShaderModule *m, VkvStage stage, uint32_t *size) {
 	VkvSpirvResult r;
 	uint64_t t0 = vkv_time_us();
+	vkv_spirv_set_storage_array_size(g_vkv.cfg.storageArraySize);
 	if (vkv_spirv_translate((const uint32_t *)m->code, m->codeSize / 4,
 	                        stage == VKV_STAGE_VERTEX ? VKV_SPIRV_VERTEX : VKV_SPIRV_FRAGMENT, vkv_spirv_log, m, &r) != 0) {
 		VKV_ERROR("shader '%s': SPIR-V to Cg translation of the %s stage failed (see messages above)", m->name,
@@ -336,7 +347,8 @@ static SceGxmProgram *vkv_spirv_compile(struct VkDevice_T *dev, VkvShaderModule 
 	bool ok = true;
 	for (uint32_t i = 0; i < r.uniCount && ok; i++)
 		ok = vkv_shader_add_uniform(m, r.unis[i].name, r.unis[i].offset, (int8_t)r.unis[i].set,
-		                            (uint8_t)r.unis[i].binding, (uint8_t)r.unis[i].scalar);
+		                            (uint8_t)r.unis[i].binding, (uint8_t)r.unis[i].scalar,
+		                            (uint16_t)VKV_MIN(r.unis[i].stride, 65535u));
 	if (ok && r.texCount) {
 		m->texb[stage] = malloc(r.texCount * sizeof(VkvTexBinding));
 		ok = m->texb[stage] != NULL;
@@ -468,7 +480,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateShaderModule(VkDevice device, const VkSha
 	}
 	if (ext)
 		for (uint32_t i = 0; i < ext->uniformBindingCount; i++)
-			vkv_shader_add_uniform(m, ext->pUniformBindings[i].name, ext->pUniformBindings[i].offset, -1, 0, 0);
+			vkv_shader_add_uniform(m, ext->pUniformBindings[i].name, ext->pUniformBindings[i].offset, -1, 0, 0, 0);
 
 	if (src == VKV_SHADER_SOURCE_GXP && sceGxmProgramCheck((const SceGxmProgram *)m->code) < 0) {
 		VKV_ERROR("vkCreateShaderModule: '%s' has a GXP header but fails sceGxmProgramCheck", m->name);
@@ -514,6 +526,7 @@ void vkv_shader_release(VkvShaderModule *m) {
 	free(m->uniSet);
 	free(m->uniBinding);
 	free(m->uniScalar);
+	free(m->uniStride);
 	for (int s = 0; s < VKV_STAGE_COUNT; s++) free(m->texb[s]);
 	free(m->code);
 	m->obj.magic = VKV_MAGIC_DEAD;

@@ -141,8 +141,13 @@ typedef struct Tr {
 	uint32_t  uniCount, uniCap;
 	Sb        intInit;     /* lines run at the start of main: integer and struct uniforms */
 	spvc_compiler comp;
+	VkvSpirvStride strides[16]; /* storage buffer arrays whose stride was widened */
+	uint32_t  strideCount;
 	bool      pointSize;   /* the vertex shader writes gl_PointSize */
 } Tr;
+
+static uint32_t g_storageArraySize = 64;
+void vkv_spirv_set_storage_array_size(uint32_t elements) { g_storageArraySize = elements ? elements : 64; }
 
 static const char *k_unsupportedRes[] = {
 	"storage buffers", "storage images", "subpass inputs", "acceleration structures",
@@ -190,8 +195,12 @@ static bool reflect(Tr *t, spvc_compiler comp, spvc_resources res) {
 	};
 	for (size_t k = 0; k < sizeof(bad) / sizeof(bad[0]); k++) {
 		if (spvc_resources_get_resource_list_for_type(res, bad[k], &list, &n) != SPVC_SUCCESS || !n) continue;
-		logf_(t->c, VKV_SPIRV_LOG_ERROR, "%s are not supported on GXM (first one: '%s')", k_unsupportedRes[k],
-		      list[0].name);
+		if (k == 0)
+			logf_(t->c, VKV_SPIRV_LOG_ERROR, "storage buffers that the shader writes are not supported on GXM "
+			      "(first one: '%s'); read-only ones work", list[0].name);
+		else
+			logf_(t->c, VKV_SPIRV_LOG_ERROR, "%s are not supported on GXM (first one: '%s')", k_unsupportedRes[k],
+			      list[0].name);
 	}
 
 	/* separate images and samplers become combined samplers named vkv_tex<n> */
@@ -337,7 +346,14 @@ static const Sampler *find_sampler(const Tr *t, const char *name) {
 	return NULL;
 }
 
+static bool add_uniform_strided(Tr *t, const char *name, uint32_t offset, uint32_t stride, const Block *b,
+                                VkvSpirvScalar scalar);
 static bool add_uniform(Tr *t, const char *name, uint32_t offset, const Block *b, VkvSpirvScalar scalar) {
+	return add_uniform_strided(t, name, offset, 0, b, scalar);
+}
+
+static bool add_uniform_strided(Tr *t, const char *name, uint32_t offset, uint32_t stride, const Block *b,
+                                VkvSpirvScalar scalar) {
 	if (t->uniCount == t->uniCap) {
 		uint32_t cap = t->uniCap ? t->uniCap * 2 : 16;
 		VkvSpirvUniform *u = realloc(t->unis, cap * sizeof(*u));
@@ -348,6 +364,7 @@ static bool add_uniform(Tr *t, const char *name, uint32_t offset, const Block *b
 	VkvSpirvUniform *u = &t->unis[t->uniCount++];
 	u->name = dupn(name, strlen(name));
 	u->offset = offset;
+	u->stride = stride;
 	u->set = b->set;
 	u->binding = b->binding;
 	u->scalar = scalar;
@@ -523,10 +540,21 @@ static void emit_cbuffer_member(Tr *t, Sb *o, const char *line, Block *b) {
 		emit_struct_member(t, o, type, name, arr, b);
 		return;
 	}
-	block_member(t, b, name);
+	int member = block_member(t, b, name);
+	uint32_t stride = 0;
+	if (arr[0] && member >= 0) {
+		spvc_type bt = spvc_compiler_get_type_handle(t->comp, b->type);
+		unsigned st = 0;
+		if (spvc_compiler_type_struct_member_array_stride(t->comp, bt, (unsigned)member, &st) == SPVC_SUCCESS) stride = st;
+		for (uint32_t k = 0; k < t->strideCount; k++)
+			if (t->strides[k].structId == b->type && t->strides[k].member == (uint32_t)member) {
+				stride = t->strides[k].stride;
+				offset = t->strides[k].offset;
+			}
+	}
 	if (kind == VKV_SPIRV_FLOAT) {
 		sb_printf(o, "uniform %s %s%s;\n", type, name, arr);
-		add_uniform(t, name, offset, b, kind);
+		add_uniform_strided(t, name, offset, stride, b, kind);
 		return;
 	}
 	if (arr[0] || strchr(suffix, 'x')) {
@@ -1042,14 +1070,22 @@ int vkv_spirv_translate(const uint32_t *words, size_t wordCount, VkvSpirvStage s
 	char *cg = NULL;
 	SpvExecutionModel want = stage == VKV_SPIRV_VERTEX ? SpvExecutionModelVertex : SpvExecutionModelFragment;
 
-	uint32_t *builtins = NULL, *lowered = NULL, *intdiv = NULL;
-	size_t builtinsCount = 0, loweredCount = 0, intdivCount = 0;
+	uint32_t *builtins = NULL, *lowered = NULL, *intdiv = NULL, *ssbo = NULL;
+	size_t builtinsCount = 0, loweredCount = 0, intdivCount = 0, ssboCount = 0;
 	int br = vkv_spirv_lower_builtins(words, wordCount, &builtins, &builtinsCount);
 	if (br > 0) {
 		words = builtins;
 		wordCount = builtinsCount;
 	}
-	int dr = br < 0 ? 0 : vkv_spirv_lower_intdiv(words, wordCount, &intdiv, &intdivCount);
+	int sr = br < 0 ? 0 : vkv_spirv_lower_ssbo(words, wordCount, g_storageArraySize, &ssbo, &ssboCount, t->strides,
+	                                           &t->strideCount, 16);
+	if (sr > 0) {
+		logf_(&c, VKV_SPIRV_LOG_INFO, "storage buffers and packed arrays are read as uniform blocks (%u elements per "
+		      "runtime array)", (unsigned)g_storageArraySize);
+		words = ssbo;
+		wordCount = ssboCount;
+	}
+	int dr = br < 0 || sr < 0 ? 0 : vkv_spirv_lower_intdiv(words, wordCount, &intdiv, &intdivCount);
 	if (dr > 0) {
 		logf_(&c, VKV_SPIRV_LOG_INFO, "integer division is done in float");
 		words = intdiv;
@@ -1057,8 +1093,9 @@ int vkv_spirv_translate(const uint32_t *words, size_t wordCount, VkvSpirvStage s
 	}
 	int lr = br < 0 || dr < 0 || stage != VKV_SPIRV_FRAGMENT ? 0
 	         : vkv_spirv_lower_subpass(words, wordCount, &lowered, &loweredCount);
-	if (br < 0 || dr < 0 || lr < 0) {
+	if (br < 0 || sr < 0 || dr < 0 || lr < 0) {
 		logf_(&c, VKV_SPIRV_LOG_ERROR, "malformed SPIR-V module");
+		free(ssbo);
 		free(builtins);
 		free(intdiv);
 		free(t);
@@ -1070,7 +1107,10 @@ int vkv_spirv_translate(const uint32_t *words, size_t wordCount, VkvSpirvStage s
 		wordCount = loweredCount;
 	}
 
-	if (spvc_context_create(&ctx) != SPVC_SUCCESS) { free(lowered); free(intdiv); free(builtins); free(t); return -1; }
+	if (spvc_context_create(&ctx) != SPVC_SUCCESS) {
+		free(lowered); free(intdiv); free(ssbo); free(builtins); free(t);
+		return -1;
+	}
 	spvc_context_set_error_callback(ctx, spvc_error_cb, &c);
 	if (spvc_context_parse_spirv(ctx, (const SpvId *)words, wordCount, &ir) != SPVC_SUCCESS) goto done;
 	if (spvc_context_create_compiler(ctx, SPVC_BACKEND_HLSL, ir, SPVC_CAPTURE_MODE_TAKE_OWNERSHIP, &comp) != SPVC_SUCCESS)
@@ -1128,6 +1168,7 @@ done:
 	if (ctx) spvc_context_destroy(ctx);
 	free(lowered);
 	free(intdiv);
+	free(ssbo);
 	free(builtins);
 	return out->cg ? 0 : -1;
 }

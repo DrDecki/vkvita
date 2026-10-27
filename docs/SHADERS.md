@@ -67,9 +67,20 @@ Nothing from the sections below has to be done by hand:
   `fixed`, `sample` and more) are renamed with a `_vkv` suffix. Unsigned
   types become signed ones, since the compiler has no `uint`.
 
+- Storage buffers the shader only reads (`readonly buffer`) become uniform
+  blocks and are fed from the `VK_DESCRIPTOR_TYPE_STORAGE_BUFFER(_DYNAMIC)`
+  descriptor. A runtime array (`mat4 bones[]`) gets `storage_array_size`
+  elements (64 by default, see DEBUGGING.md) and is fed as far as the bound
+  range goes; `.length()` returns that size, not the real one. Every
+  element of the array takes space in the default uniform buffer of each
+  draw, so keep the size close to what the game uses.
+- std430 arrays of scalars and vec2s (4 or 8 bytes apart) at the end of a
+  storage buffer or push constant block work; elsewhere in the block they
+  cannot be expressed and the translation fails.
+
 Not supported (the translation fails with a message naming the resource):
-storage buffers and images, compute and geometry stages, more than 16
-textures in one stage.
+storage buffers the shader writes, storage images, compute and geometry
+stages, more than 16 textures in one stage.
 
 With `debug = shaders` the log contains the generated Cg (lines starting with
 `cg-src[name:line]`), which is what to look at when the Cg compiler reports

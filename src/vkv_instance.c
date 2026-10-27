@@ -120,7 +120,10 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceProperties(VkPhysicalDevice pd, Vk
 	l->maxImageArrayLayers = 6;
 	l->maxTexelBufferElements = 0;
 	l->maxUniformBufferRange = 65536;
-	l->maxStorageBufferRange = 0;
+	l->maxStorageBufferRange = 65536;           /* read-only use, fed like uniform buffers */
+	l->maxPerStageDescriptorStorageBuffers = 8;
+	l->maxDescriptorSetStorageBuffers = 8;
+	l->maxDescriptorSetStorageBuffersDynamic = 4;
 	l->maxPushConstantsSize = VKV_MAX_PUSH;
 	l->maxMemoryAllocationCount = 4096;
 	l->maxSamplerAllocationCount = 4000;

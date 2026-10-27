@@ -511,3 +511,160 @@ int vkv_spirv_lower_intdiv(const uint32_t *w, size_t n, uint32_t **outWords, siz
 	*outCount = o.n;
 	return 1;
 }
+
+/* ------------------------------------------------------------------------ */
+/* Read-only storage buffers                                                */
+/* ------------------------------------------------------------------------ */
+/* GXM cannot write buffers from a shader, but a storage buffer the shader
+ * only reads is just a big uniform block. The storage class becomes Uniform,
+ * BufferBlock becomes Block, a runtime array gets a fixed size and
+ * OpArrayLength returns that size. VkVita feeds the block like any other
+ * uniform buffer, from the storage buffer descriptor. */
+enum {
+	OP_TYPE_ARRAY = 28, OP_TYPE_RUNTIME_ARRAY = 29, OP_ARRAY_LENGTH = 68, OP_COPY_OBJECT = 83,
+	DEC_BUFFER_BLOCK = 3, DEC_NON_WRITABLE = 24, SC_STORAGE_BUFFER = 12, DEC_ARRAY_STRIDE = 6, SC_PUSH_CONSTANT = 9,
+};
+
+int vkv_spirv_lower_ssbo(const uint32_t *w, size_t n, uint32_t arraySize, uint32_t **outWords, size_t *outCount,
+                         VkvSpirvStride *strides, uint32_t *strideCount, uint32_t maxStrides) {
+	*outWords = NULL;
+	*outCount = 0;
+	*strideCount = 0;
+	if (n < 5 || w[0] != VKV_SPIRV_MAGIC) return -1;
+	uint32_t bound = w[3];
+	if (bound > 1u << 22) return -1;
+
+	/* per id */
+	uint8_t *blockKind = calloc(bound, 1);   /* 1 BufferBlock struct, 2 Block struct */
+	uint8_t *varRO = calloc(bound, 1);       /* variable decorated NonWritable */
+	uint8_t *isArray = calloc(bound, 1);
+	uint32_t *members = calloc(bound, sizeof(uint32_t));    /* struct: member count */
+	uint32_t *roMembers = calloc(bound, sizeof(uint32_t));  /* struct: members marked NonWritable */
+	uint32_t *lastType = calloc(bound, sizeof(uint32_t));   /* struct: type of the last member */
+	uint32_t *lastOffset = calloc(bound, sizeof(uint32_t)); /* struct: offset of the last member */
+	uint32_t *arrStride = calloc(bound, sizeof(uint32_t));
+	uint32_t *ptrType = calloc(bound, sizeof(uint32_t));
+	uint32_t *widen = calloc(bound, sizeof(uint32_t));      /* struct: 1 + new offset of its last member */
+	int result = 0;
+	if (!blockKind || !varRO || !isArray || !members || !roMembers || !lastType || !lastOffset || !arrStride ||
+	    !ptrType || !widen) {
+		result = -1;
+		goto out;
+	}
+	uint32_t uintId = 0;
+	bool any = false, writable = false;
+	for (size_t i = 5; i < n;) {
+		uint32_t len = w[i] >> 16, op = w[i] & 0xFFFF;
+		if (!len || i + len > n) { result = -1; goto out; }
+		const uint32_t *a = w + i + 1;
+		if (op == OP_DECORATE && len >= 3 && a[0] < bound) {
+			if (a[1] == DEC_BUFFER_BLOCK) blockKind[a[0]] = 1;
+			else if (a[1] == DEC_BLOCK && !blockKind[a[0]]) blockKind[a[0]] = 2;
+			else if (a[1] == DEC_NON_WRITABLE) varRO[a[0]] = 1;
+			else if (a[1] == DEC_ARRAY_STRIDE && len >= 4) arrStride[a[0]] = a[2];
+		} else if (op == OP_MEMBER_DECORATE && len >= 4 && a[0] < bound) {
+			if (a[2] == DEC_NON_WRITABLE) roMembers[a[0]]++;
+		} else if (op == OP_TYPE_STRUCT && a[0] < bound) {
+			members[a[0]] = len - 2;
+			if (len > 2) lastType[a[0]] = a[len - 2];
+		} else if ((op == OP_TYPE_ARRAY || op == OP_TYPE_RUNTIME_ARRAY) && a[0] < bound) {
+			isArray[a[0]] = 1;
+		} else if (op == OP_TYPE_POINTER && a[0] < bound) {
+			ptrType[a[0]] = a[2];
+		} else if (op == OP_TYPE_INT && a[1] == 32 && !a[2] && !uintId) {
+			uintId = a[0];
+		}
+		i += len;
+	}
+	/* member offsets come after the struct sizes are known */
+	for (size_t i = 5; i < n;) {
+		uint32_t len = w[i] >> 16, op = w[i] & 0xFFFF;
+		const uint32_t *a = w + i + 1;
+		if (op == OP_MEMBER_DECORATE && len >= 5 && a[0] < bound && a[2] == DEC_OFFSET && members[a[0]] &&
+		    a[1] == members[a[0]] - 1)
+			lastOffset[a[0]] = a[3];
+		i += len;
+	}
+	/* the storage buffer and push constant variables */
+	for (size_t i = 5; i < n;) {
+		uint32_t len = w[i] >> 16, op = w[i] & 0xFFFF;
+		const uint32_t *a = w + i + 1;
+		if (op == OP_VARIABLE && a[0] < bound && a[1] < bound) {
+			uint32_t pointee = ptrType[a[0]] < bound ? ptrType[a[0]] : 0;
+			bool ssbo = a[2] == SC_STORAGE_BUFFER || (a[2] == SC_UNIFORM && pointee && blockKind[pointee] == 1);
+			if (ssbo) {
+				any = true;
+				bool ro = varRO[a[1]] || (pointee && members[pointee] && roMembers[pointee] >= members[pointee]);
+				if (!ro) writable = true;
+			}
+			/* std430 arrays of scalars and vec2s pack tighter than a cbuffer can say. One at the
+			 * end of the block gets a 16 byte stride and offset, nothing follows it to overlap;
+			 * VkVita still reads the buffer with the real layout. */
+			uint32_t last = pointee ? lastType[pointee] : 0;
+			if ((ssbo || a[2] == SC_PUSH_CONSTANT) && last && last < bound && isArray[last] && arrStride[last] &&
+			    (arrStride[last] % 16 || lastOffset[pointee] % 16) && !widen[pointee] && *strideCount < maxStrides) {
+				widen[pointee] = 1 + ((lastOffset[pointee] + 15) & ~15u);
+				strides[*strideCount].structId = pointee;
+				strides[*strideCount].member = members[pointee] - 1;
+				strides[*strideCount].stride = arrStride[last];
+				strides[*strideCount].offset = lastOffset[pointee];
+				(*strideCount)++;
+			}
+		}
+		i += len;
+	}
+	if (writable || (!any && !*strideCount)) goto out; /* nothing to do, or a buffer GXM cannot write */
+
+	uint32_t newUint = 0, sizeConst = bound++;
+	if (!uintId) { newUint = bound++; uintId = newUint; }
+
+	Out o = { 0 };
+	for (size_t i = 0; i < 5; i++) put(&o, w[i]);
+	o.w[3] = bound;
+	bool sizeEmitted = false;
+	for (size_t i = 5; i < n;) {
+		uint32_t len = w[i] >> 16, op = w[i] & 0xFFFF;
+		const uint32_t *a = w + i + 1;
+		bool widened = false;
+		if (op == OP_DECORATE && len >= 4 && a[1] == DEC_ARRAY_STRIDE && a[0] < bound)
+			for (uint32_t k = 0; k < *strideCount; k++)
+				if (lastType[strides[k].structId] == a[0]) widened = true;
+		if (op == OP_DECORATE && len >= 3 && a[1] == DEC_BUFFER_BLOCK) {
+			INST(&o, OP_DECORATE, a[0], DEC_BLOCK);
+		} else if (widened) {
+			INST(&o, OP_DECORATE, a[0], DEC_ARRAY_STRIDE, 16);
+		} else if (op == OP_MEMBER_DECORATE && len >= 5 && a[0] < bound && a[2] == DEC_OFFSET && widen[a[0]] &&
+		           a[1] == members[a[0]] - 1) {
+			INST(&o, OP_MEMBER_DECORATE, a[0], a[1], DEC_OFFSET, widen[a[0]] - 1);
+		} else if (op == OP_TYPE_POINTER && a[1] == SC_STORAGE_BUFFER) {
+			INST(&o, OP_TYPE_POINTER, a[0], SC_UNIFORM, a[2]);
+		} else if (op == OP_VARIABLE && len >= 4 && a[2] == SC_STORAGE_BUFFER) {
+			put(&o, w[i]);
+			put(&o, a[0]);
+			put(&o, a[1]);
+			put(&o, SC_UNIFORM);
+			for (uint32_t k = 3; k + 1 < len; k++) put(&o, a[k]);
+		} else if (op == OP_TYPE_RUNTIME_ARRAY) {
+			if (!sizeEmitted) {
+				if (newUint) INST(&o, OP_TYPE_INT, newUint, 32, 0);
+				INST(&o, OP_CONSTANT, uintId, sizeConst, arraySize);
+				sizeEmitted = true;
+			}
+			INST(&o, OP_TYPE_ARRAY, a[0], a[1], sizeConst);
+		} else if (op == OP_ARRAY_LENGTH) {
+			INST(&o, OP_COPY_OBJECT, a[0], a[1], sizeConst);
+		} else {
+			for (uint32_t k = 0; k < len; k++) put(&o, w[i + k]);
+		}
+		i += len;
+	}
+	if (o.oom) { free(o.w); result = -1; goto out; }
+	*outWords = o.w;
+	*outCount = o.n;
+	result = 1;
+out:
+	if (result <= 0) *strideCount = 0;
+	free(blockKind); free(varRO); free(isArray); free(members); free(roMembers); free(lastType); free(lastOffset);
+	free(arrStride); free(ptrType); free(widen);
+	return result;
+}

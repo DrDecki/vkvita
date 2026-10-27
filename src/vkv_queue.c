@@ -489,15 +489,36 @@ static const uint8_t *vkv_uniform_buffer_data(VkvReplay *R, int set, uint32_t bi
 		if (lb->binding != binding || !lb->count) continue;
 		const VkvDescriptor *d = &s->desc[lb->first];
 		if (!d->valid || !d->buffer || !d->buffer->ptr) return NULL;
-		if (d->type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && d->type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC)
+		bool dynamic = d->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC ||
+		               d->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
+		if (!dynamic && d->type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && d->type != VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
 			return NULL;
 		uint32_t off = d->offset;
-		if (d->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC && lb->dynIndex < VKV_MAX_DYNAMIC)
+		if (dynamic && lb->dynIndex < VKV_MAX_DYNAMIC)
 			off += R->dyn[set][lb->dynIndex];
 		*range = d->range;
 		return d->buffer->ptr + off;
 	}
 	return NULL;
+}
+
+static void vkv_write_uniforms_one(void *buf, const VkvUniformMap *u, const uint8_t *base) {
+	if (u->scalar) {
+		float conv[4];
+		uint32_t c = VKV_MIN(u->comps, 4u);
+		for (uint32_t k = 0; k < c; k++) {
+			uint32_t bits;
+			memcpy(&bits, base + u->offset + k * 4, 4);
+			conv[k] = u->scalar == 1 ? (float)(int32_t)bits : (float)bits;
+		}
+		sceGxmSetUniformDataF(buf, u->param, 0, c, conv);
+	} else if (u->elems <= 1 || u->elemStride == u->comps * 4) {
+		sceGxmSetUniformDataF(buf, u->param, 0, u->comps * u->elems, (const float *)(base + u->offset));
+	} else {
+		for (uint32_t e = 0; e < u->elems; e++)
+			sceGxmSetUniformDataF(buf, u->param, e * u->comps, u->comps,
+			                      (const float *)(base + u->offset + e * u->elemStride));
+	}
 }
 
 static void vkv_write_uniforms(VkvReplay *R, void *buf, const VkvUniformMap *map, uint32_t n, const char *shader) {
@@ -515,6 +536,13 @@ static void vkv_write_uniforms(VkvReplay *R, void *buf, const VkvUniformMap *map
 		} else {
 			uint32_t range = 0;
 			base = vkv_uniform_buffer_data(R, u->set, u->binding, &range);
+			/* an array (a runtime array of a storage buffer) is fed as far as the buffer goes */
+			if (base && u->elems > 1 && u->offset + bytes > range && u->offset + u->elemStride <= range) {
+				VkvUniformMap part = *u;
+				part.elems = (range - u->offset) / u->elemStride;
+				vkv_write_uniforms_one(buf, &part, base);
+				continue;
+			}
 			if (!base || u->offset + bytes > range) {
 				if (vkv_validate())
 					vkv_fail("draw", "shader '%s' uniform '%s' needs %u bytes at offset %u of the uniform buffer at "
@@ -524,22 +552,7 @@ static void vkv_write_uniforms(VkvReplay *R, void *buf, const VkvUniformMap *map
 				continue;
 			}
 		}
-		if (u->scalar) {
-			float conv[4];
-			uint32_t c = VKV_MIN(u->comps, 4u);
-			for (uint32_t k = 0; k < c; k++) {
-				uint32_t bits;
-				memcpy(&bits, base + u->offset + k * 4, 4);
-				conv[k] = u->scalar == 1 ? (float)(int32_t)bits : (float)bits;
-			}
-			sceGxmSetUniformDataF(buf, u->param, 0, c, conv);
-		} else if (u->elems <= 1 || u->elemStride == u->comps * 4) {
-			sceGxmSetUniformDataF(buf, u->param, 0, u->comps * u->elems, (const float *)(base + u->offset));
-		} else {
-			for (uint32_t e = 0; e < u->elems; e++)
-				sceGxmSetUniformDataF(buf, u->param, e * u->comps, u->comps,
-				                      (const float *)(base + u->offset + e * u->elemStride));
-		}
+		vkv_write_uniforms_one(buf, u, base);
 	}
 }
 

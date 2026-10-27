@@ -69,6 +69,7 @@ typedef struct VkvConfig {
 	uint32_t       scenesPerFrame;     /* hint for render targets, default 4 */
 	uint32_t       ffVertexBufferSize; /* fixed-function streaming buffer per frame, default 1 MiB */
 	uint32_t       ffFrames;           /* fixed-function frames in flight, default 3 */
+	uint32_t       storageArraySize;   /* elements of a runtime array in a read-only storage buffer, default 64 */
 } VkvConfig;
 
 void     vkvGetDefaultConfig(VkvConfig *config);

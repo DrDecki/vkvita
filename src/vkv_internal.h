@@ -412,6 +412,7 @@ typedef struct VkShaderModule_T {
 	int8_t                   *uniSet;     /* per uniform: -1 push constants, else uniform buffer set */
 	uint8_t                  *uniBinding;
 	uint8_t                  *uniScalar;
+	uint16_t                 *uniStride;  /* bytes between array elements in the source, 0 = std140 */
 	/* program per stage, compiled/registered lazily */
 	SceGxmProgram            *prog[VKV_STAGE_COUNT];
 	bool                      progOwned[VKV_STAGE_COUNT];
