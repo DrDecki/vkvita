@@ -67,10 +67,16 @@ add_library(vkvita STATIC
   src/vkv_formats.c
   src/vkv_instance.c
   src/vkv_device.c
+  src/vkv_memory.c
+  src/vkv_image.c
   src/vkv_shader.c
   src/vkv_pipeline.c
   src/vkv_cmd.c
   src/vkv_queue.c
+  src/vkv_clear.c
+  src/vkv_draw.c
+  src/vkv_transfer.c
+  src/vkv_swapchain.c
   src/vkv_ff.c
   src/vkv_query.c
   src/vkv_dispatch.c

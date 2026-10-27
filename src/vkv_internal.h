@@ -156,6 +156,7 @@ typedef struct VkvPoolBlock {
 typedef struct VkvPool {
 	VkvPoolBlock *blocks[VKV_HEAP_COUNT];
 } VkvPool;
+void vkv_pool_destroy(VkvPool *pool);
 
 typedef struct VkvFormatInfo {
 	VkFormat            vk;
