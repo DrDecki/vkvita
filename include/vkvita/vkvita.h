@@ -51,7 +51,8 @@ typedef enum VkvCompatFlagBits {
 	VKV_COMPAT_FORCE_VSYNC    = 1u << 5, /* every present waits for vblank */
 	VKV_COMPAT_NO_VSYNC       = 1u << 6, /* no present waits for vblank */
 	VKV_COMPAT_IGNORE_SCISSOR = 1u << 7, /* skip scissor (region clip) */
-	VKV_COMPAT_FAST_TRANSFERS = 1u << 8  /* don't wait for the GPU before CPU-side copies (faster, may race) */
+	VKV_COMPAT_FAST_TRANSFERS = 1u << 8, /* don't wait for the GPU before CPU-side copies (faster, may race) */
+	VKV_COMPAT_CPU_COPY       = 1u << 9  /* copy images with the CPU, not the transfer unit */
 } VkvCompatFlagBits;
 typedef uint32_t VkvCompatFlags;
 

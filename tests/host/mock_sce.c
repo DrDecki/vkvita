@@ -774,6 +774,39 @@ int sceGxmTransferFill(uint32_t color, SceGxmTransferFormat fmt, void *dst, uint
 	return 0;
 }
 
+static unsigned transfer_bpp(SceGxmTransferFormat f) {
+	switch (f) {
+	case SCE_GXM_TRANSFER_FORMAT_U8_R: return 1;
+	case SCE_GXM_TRANSFER_FORMAT_U8U8_GR: case SCE_GXM_TRANSFER_FORMAT_RAW16: return 2;
+	case SCE_GXM_TRANSFER_FORMAT_U8U8U8_BGR: return 3;
+	case SCE_GXM_TRANSFER_FORMAT_U8U8U8U8_ABGR: case SCE_GXM_TRANSFER_FORMAT_RAW32: return 4;
+	case SCE_GXM_TRANSFER_FORMAT_RAW64: return 8;
+	case SCE_GXM_TRANSFER_FORMAT_RAW128: return 16;
+	default: return 0;
+	}
+}
+
+static int g_transferCopies;
+int sceGxmTransferCopy(uint32_t w, uint32_t h, uint32_t ckValue, uint32_t ckMask, SceGxmTransferColorKeyMode ckMode,
+	SceGxmTransferFormat sf, SceGxmTransferType st, const void *src, uint32_t sx, uint32_t sy, int32_t sstride,
+	SceGxmTransferFormat df, SceGxmTransferType dt, void *dst, uint32_t dx, uint32_t dy, int32_t dstride,
+	SceGxmSyncObject *sync, uint32_t flags, const SceGxmNotification *n) {
+	(void)ckValue; (void)ckMask; (void)sync; (void)flags; (void)n;
+	if (g_inScene) mock_fail("TransferCopy inside a scene");
+	if (ckMode != SCE_GXM_TRANSFER_COLORKEY_NONE) mock_fail("TransferCopy color key");
+	if (st != SCE_GXM_TRANSFER_LINEAR || dt != SCE_GXM_TRANSFER_LINEAR) mock_fail("TransferCopy only tested linear");
+	unsigned bpp = transfer_bpp(sf);
+	if (!bpp || sf != df) { mock_fail("TransferCopy formats 0x%x 0x%x", sf, df); return -1; }
+	if (!w || !h) mock_fail("TransferCopy empty");
+	touch((const uint8_t *)src + (size_t)(sy + h - 1) * sstride + sx * bpp, (size_t)w * bpp);
+	touch((uint8_t *)dst + (size_t)(dy + h - 1) * dstride + dx * bpp, (size_t)w * bpp);
+	for (uint32_t r = 0; r < h; r++)
+		memmove((uint8_t *)dst + (size_t)(dy + r) * dstride + dx * bpp,
+		        (const uint8_t *)src + (size_t)(sy + r) * sstride + sx * bpp, (size_t)w * bpp);
+	g_transferCopies++;
+	return 0;
+}
+
 void sceGxmSetVertexProgram(SceGxmContext *c, const SceGxmVertexProgram *vp) { (void)c; g_vp = vp; g_vubFresh = 0; }
 void sceGxmSetFragmentProgram(SceGxmContext *c, const SceGxmFragmentProgram *fp) { (void)c; g_fp = fp; g_fubFresh = 0; }
 int sceGxmSetVertexStream(SceGxmContext *c, unsigned int i, const void *d) {
@@ -919,9 +952,9 @@ static void report_and_exit(void) {
 	size_t leaked = 0;
 	int blocks = 0;
 	for (int i = 1; i < MAX_BLOCKS; i++) if (g_blocks[i].used) { leaked += g_blocks[i].size; blocks++; }
-	printf("\n[mock] frames=%d presents=%d scenes=%d draws=%d indices=%d fills=%d uniformWrites=%d "
+	printf("\n[mock] frames=%d presents=%d scenes=%d draws=%d indices=%d fills=%d copies=%d uniformWrites=%d "
 	       "memblocks_left=%d (%zu KB) peak_cdram=%zu KB\n",
-	       g_frame, g_presents, g_scenes, g_draws, g_indices, g_fills, g_uniformWrites, blocks, leaked / 1024, g_cdram / 1024);
+	       g_frame, g_presents, g_scenes, g_draws, g_indices, g_fills, g_transferCopies, g_uniformWrites, blocks, leaked / 1024, g_cdram / 1024);
 	if (blocks) mock_fail("%d memory blocks were not freed", blocks);
 	if (g_gxmInit) mock_fail("sceGxmTerminate was not called");
 	if (!g_presents) mock_fail("nothing was presented");

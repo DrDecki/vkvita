@@ -304,6 +304,8 @@ bool vkv_vis_init(struct VkDevice_T *dev);
 void vkv_query_begin(struct VkDevice_T *dev, SceGxmContext *ctx, VkvQueryPool *p, uint32_t q);
 void vkv_query_end(struct VkDevice_T *dev, SceGxmContext *ctx, VkvQueryPool *p, uint32_t q);
 void vkv_query_reset(struct VkDevice_T *dev, VkvQueryPool *p, uint32_t first, uint32_t count);
+VkResult vkv_query_results(struct VkDevice_T *dev, VkvQueryPool *p, uint32_t first, uint32_t count, size_t dataSize,
+                           void *data, VkDeviceSize stride, VkQueryResultFlags flags);
 
 /* ------------------------------------------------------------------------ */
 /* Resources                                                                */
@@ -688,7 +690,8 @@ typedef enum VkvCmdType {
 	VKV_CMD_QUERY_RESET,
 	VKV_CMD_TIMESTAMP,
 	VKV_CMD_SET_EVENT,
-	VKV_CMD_NEXT_SUBPASS
+	VKV_CMD_NEXT_SUBPASS,
+	VKV_CMD_COPY_QUERY
 } VkvCmdType;
 
 typedef struct VkvCmd {
@@ -738,6 +741,9 @@ typedef struct VkvCmdDrawIndirect {
 typedef struct VkvCmdExecute { VkvCmd h; uint32_t n; struct VkCommandBuffer_T *cbs[]; } VkvCmdExecute;
 typedef struct VkvCmdLineWidth { VkvCmd h; float width; } VkvCmdLineWidth;
 typedef struct VkvCmdQuery { VkvCmd h; VkvQueryPool *pool; uint32_t first, count; } VkvCmdQuery;
+typedef struct VkvCmdCopyQuery {
+	VkvCmd h; VkvQueryPool *pool; uint32_t first, count; VkvBuffer *dst; uint32_t off, stride; VkQueryResultFlags flags;
+} VkvCmdCopyQuery;
 typedef struct VkvCmdSetEvent { VkvCmd h; VkvEvent *event; bool value; } VkvCmdSetEvent;
 
 /* Fixed-function draw (records everything needed, no external state) */

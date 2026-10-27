@@ -614,6 +614,11 @@ static bool parse_io(Tr *t, const char *line, Io *io) {
 	} else if (starts_with(io->sem, "SV_")) {
 		logf_(t->c, VKV_SPIRV_LOG_ERROR, "built-in '%s' (%s) is not available on GXM", io->name, io->sem);
 		return false;
+	} else if (starts_with(io->sem, "TEXCOORD") && atoi(io->sem + 8) >= 10) {
+		logf_(t->c, VKV_SPIRV_LOG_ERROR,
+		      "varying '%s' uses location %d, GXM has ten varying slots (locations 0 to 9)", io->name,
+		      atoi(io->sem + 8));
+		return false;
 	}
 
 	const char *suffix;

@@ -110,7 +110,7 @@ static const VkvFlagName k_compatNames[] = {
 	{ "disable_cull", VKV_COMPAT_DISABLE_CULL }, { "cpu_clear", VKV_COMPAT_CPU_CLEAR },
 	{ "shader_cache", VKV_COMPAT_SHADER_CACHE }, { "force_vsync", VKV_COMPAT_FORCE_VSYNC },
 	{ "no_vsync", VKV_COMPAT_NO_VSYNC }, { "ignore_scissor", VKV_COMPAT_IGNORE_SCISSOR },
-	{ "fast_transfers", VKV_COMPAT_FAST_TRANSFERS },
+	{ "fast_transfers", VKV_COMPAT_FAST_TRANSFERS }, { "cpu_copy", VKV_COMPAT_CPU_COPY },
 };
 
 static char *vkv_trim(char *s) {

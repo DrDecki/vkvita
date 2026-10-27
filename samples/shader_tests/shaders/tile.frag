@@ -51,6 +51,12 @@ layout(set = 0, binding = 8) uniform sampler2D renderedTex; /* layer 1, cleared 
 layout(set = 0, binding = 9) uniform sampler2D alphaTex;    /* R8 seen as (1, 1, 1, R) */
 layout(set = 0, binding = 10) uniform sampler2D swappedTex; /* RGBA8 seen as BGRA */
 layout(set = 0, binding = 11) uniform sampler2D biasTex;    /* mip levels red, green, blue, white; bias +1 */
+layout(set = 0, binding = 12) uniform sampler2D copyTex;    /* red, with two regions copied in by vkCmdCopyImage */
+
+layout(std430, set = 0, binding = 13) readonly buffer Query {
+    uint samples;   /* written by vkCmdCopyQueryPoolResults */
+    uint available;
+} query;
 
 layout(push_constant) uniform Push {
     int tile;
@@ -87,7 +93,14 @@ void main() {
     else if (pc.tile == 14) ok = near(texture(alphaTex, uv), vec4(1.0, 1.0, 1.0, 0.5));
     else if (pc.tile == 15) ok = near(texture(swappedTex, uv), vec4(0.0, 0.0, 1.0, 1.0));
     /* the scale makes this pick mip level 1 (green); the sampler's bias of +1 moves it to level 2 */
-    else ok = near(texture(biasTex, vUv * pc.lodScale), vec4(0.0, 0.0, 1.0, 1.0));
+    else if (pc.tile == 16) ok = near(texture(biasTex, vUv * pc.lodScale), vec4(0.0, 0.0, 1.0, 1.0));
+    /* texels 4 to 11 come from the yellow render target, 12 to 15 from a green texture, the rest stays red */
+    else if (pc.tile == 17)
+        ok = near(texture(copyTex, vec2(0.5)), vec4(1.0, 1.0, 0.0, 1.0)) &&
+             near(texture(copyTex, vec2(0.875)), vec4(0.0, 1.0, 0.0, 1.0)) &&
+             near(texture(copyTex, vec2(0.125)), vec4(1.0, 0.0, 0.0, 1.0));
+    /* an occlusion query around a draw of about 130 pixels */
+    else ok = query.available == 1u && query.samples > 50u && query.samples < 1000u;
     /* drawn again in red with a scissor that ends left of the tile: nothing may show */
     if (pc.which == 7) ok = false;
     /* a darker border shows the tiles apart */

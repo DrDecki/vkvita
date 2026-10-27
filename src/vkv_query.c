@@ -117,6 +117,13 @@ VKAPI_ATTR VkResult VKAPI_CALL vkGetQueryPoolResults(VkDevice device, VkQueryPoo
 	VkvQueryPool *p = VKV_ND(VkvQueryPool, pool);
 	if (VKV_CHECK(VKV_OBJ_OK(p, VKV_MAGIC_QPOOL) && first + count <= p->count, "invalid query pool or range"))
 		return VK_ERROR_UNKNOWN;
+	return vkv_query_results(device, p, first, count, dataSize, data, stride, flags);
+}
+
+/* Writes results like vkGetQueryPoolResults; also used by
+ * vkCmdCopyQueryPoolResults at submit. */
+VkResult vkv_query_results(struct VkDevice_T *device, VkvQueryPool *p, uint32_t first, uint32_t count, size_t dataSize,
+                           void *data, VkDeviceSize stride, VkQueryResultFlags flags) {
 	/* occlusion results are ready once the scene that ended the query is done;
 	 * only VK_QUERY_RESULT_WAIT_BIT blocks for that */
 	if (p->type == VK_QUERY_TYPE_OCCLUSION && (flags & VK_QUERY_RESULT_WAIT_BIT) && device->gpuBusy &&

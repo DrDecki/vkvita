@@ -33,6 +33,8 @@ typedef struct VkvReplay {
 	uint32_t                  scenesLeft;     /* render passes left in this submit */
 	VkvFence                 *fence;
 	bool                      fenceAttached;
+	bool                      transferTail;   /* a transfer was issued after the last scene */
+	bool                      queryActive;    /* an occlusion query counts the draws */
 
 	/* bound state */
 	VkvPipeline              *pipe;
@@ -144,6 +146,7 @@ static void vkv_clear_color_rect(VkvReplay *R, VkvImage *img, uint32_t level, ui
 		if (r >= 0) {
 			R->dev->usedTransfer = true;
 			R->dev->transferPending = true;
+			R->transferTail = true;
 			return;
 		}
 		s_fillBroken = true;
@@ -248,6 +251,7 @@ static void vkv_begin_scene(VkvReplay *R, bool loadDepth, bool clearDepth, float
 
 static void vkv_end_scene(VkvReplay *R, bool final) {
 	if (!R->inScene) return;
+	R->transferTail = false; /* the scene waited for earlier transfers, and the fence follows it */
 	R->dev->progress.value = ++R->dev->sceneSerial;
 	if (final && R->fence && R->scenesLeft == 1) {
 		R->fence->serial = R->dev->sceneSerial;
@@ -470,6 +474,11 @@ static bool vkv_clear_with_quads(VkvReplay *R, const VkvCmdClearAttach *c) {
 	sceGxmSetRegionClip(ctx, SCE_GXM_REGION_CLIP_OUTSIDE, 0, 0, R->fb->width - 1, R->fb->height - 1);
 
 	float col[4] = { cv.color.float32[0], cv.color.float32[1], cv.color.float32[2], cv.color.float32[3] };
+	/* clears do not count toward an occlusion query */
+	if (R->queryActive) {
+		sceGxmSetFrontVisibilityTestEnable(ctx, SCE_GXM_VISIBILITY_TEST_DISABLED);
+		sceGxmSetBackVisibilityTestEnable(ctx, SCE_GXM_VISIBILITY_TEST_DISABLED);
+	}
 	for (uint32_t k = 0; k < c->nr; k++) {
 		const VkRect2D *r = &c->r[k].rect;
 		float rect[4] = { r->offset.x / fw * 2.0f - 1.0f, r->offset.y / fh * 2.0f - 1.0f,
@@ -484,6 +493,10 @@ static bool vkv_clear_with_quads(VkvReplay *R, const VkvCmdClearAttach *c) {
 		sceGxmSetUniformDataF(ub, d->clearColor, 0, 4, col);
 		R->sceneDraws++;
 		sceGxmDraw(ctx, SCE_GXM_PRIMITIVE_TRIANGLE_STRIP, SCE_GXM_INDEX_FORMAT_U16, d->linearIdx16.base, 4);
+	}
+	if (R->queryActive) {
+		sceGxmSetFrontVisibilityTestEnable(ctx, SCE_GXM_VISIBILITY_TEST_ENABLED);
+		sceGxmSetBackVisibilityTestEnable(ctx, SCE_GXM_VISIBILITY_TEST_ENABLED);
 	}
 	if (depth || stencil) g_vkv.cur.clears++;
 	/* the next draw sets its own state again */
@@ -985,9 +998,90 @@ static void vkv_exec_copy_buf_img(VkvReplay *R, const VkvCmdCopyBufImg *c, bool 
 	}
 }
 
+/* Transfer formats that move texels of a given size unchanged. */
+static bool vkv_transfer_format(uint32_t bpp, SceGxmTransferFormat *f) {
+	switch (bpp) {
+	case 1: *f = SCE_GXM_TRANSFER_FORMAT_U8_R; return true;
+	case 2: *f = SCE_GXM_TRANSFER_FORMAT_U8U8_GR; return true;
+	case 3: *f = SCE_GXM_TRANSFER_FORMAT_U8U8U8_BGR; return true;
+	case 4: *f = SCE_GXM_TRANSFER_FORMAT_U8U8U8U8_ABGR; return true;
+	case 8: *f = SCE_GXM_TRANSFER_FORMAT_RAW64; return true;
+	case 16: *f = SCE_GXM_TRANSFER_FORMAT_RAW128; return true;
+	default: return false;
+	}
+}
+
+/* Copies between linear images on the transfer unit, so the CPU neither waits
+ * for the GPU nor touches the pixels. The transfer can wait for one sync
+ * object: the source's when it is a render target (its pixels may still be
+ * coming), else the destination's. When both are render targets the scenes
+ * that draw into the source are waited for on the CPU. Returns false when
+ * the CPU has to copy instead. */
+static bool vkv_gpu_copy_image(VkvReplay *R, const VkvCmdCopyImage *c) {
+	static uint32_t s_brokenSizes; /* texel sizes the transfer unit refused */
+	VkvImage *src = c->src, *dst = c->dst;
+	SceGxmTransferFormat tf;
+	if ((s_brokenSizes & (1u << src->fi->bpp)) || vkv_compat(VKV_COMPAT_CPU_COPY) || src->swizzled || dst->swizzled || src->fi->block ||
+	    src->fi->isDepth || dst->fi->isDepth || !vkv_transfer_format(src->fi->bpp, &tf))
+		return false;
+	/* every region must be one the transfer can do in full */
+	for (uint32_t i = 0; i < c->n; i++) {
+		const VkImageCopy *r = &c->r[i];
+		if (r->srcSubresource.mipLevel >= src->levels || r->dstSubresource.mipLevel >= dst->levels) return false;
+		if (r->srcOffset.x < 0 || r->srcOffset.y < 0 || r->dstOffset.x < 0 || r->dstOffset.y < 0) return false;
+		if (r->srcSubresource.baseArrayLayer + VKV_MAX(r->srcSubresource.layerCount, 1u) > src->layers ||
+		    r->dstSubresource.baseArrayLayer + VKV_MAX(r->srcSubresource.layerCount, 1u) > dst->layers)
+			return false;
+	}
+	SceGxmSyncObject *sync = src->sync ? src->sync : dst->sync;
+	if (src->sync && dst->sync && src != dst && R->dev->gpuBusy) vkv_device_wait_gpu(R->dev);
+	/* scenes that still sample the destination must finish reading it first */
+	if (dst->readSerial && R->dev->gpuBusy && !vkv_serial_done(R->dev, dst->readSerial)) vkv_device_wait_gpu(R->dev);
+	for (uint32_t i = 0; i < c->n; i++) {
+		const VkImageCopy *r = &c->r[i];
+		uint32_t sl = r->srcSubresource.mipLevel, dl = r->dstSubresource.mipLevel;
+		uint32_t sw, sh, dw, dh;
+		vkv_image_level_elems(src, sl, &sw, &sh);
+		vkv_image_level_elems(dst, dl, &dw, &dh);
+		uint32_t sx = (uint32_t)r->srcOffset.x, sy = (uint32_t)r->srcOffset.y;
+		uint32_t dx = (uint32_t)r->dstOffset.x, dy = (uint32_t)r->dstOffset.y;
+		if (sx >= sw || sy >= sh || dx >= dw || dy >= dh) continue;
+		uint32_t w = VKV_MIN(r->extent.width, VKV_MIN(sw - sx, dw - dx));
+		uint32_t h = VKV_MIN(r->extent.height, VKV_MIN(sh - sy, dh - dy));
+		uint32_t layers = VKV_MAX(r->srcSubresource.layerCount, 1u);
+		for (uint32_t L = 0; L < layers; L++) {
+			const uint8_t *sp = vkv_image_level_ptr(src, sl, r->srcSubresource.baseArrayLayer + L);
+			uint8_t *dp = vkv_image_level_ptr(dst, dl, r->dstSubresource.baseArrayLayer + L);
+			int res = sceGxmTransferCopy(w, h, 0, 0, SCE_GXM_TRANSFER_COLORKEY_NONE, tf, SCE_GXM_TRANSFER_LINEAR, sp, sx,
+			                             sy, (int32_t)src->levelPitch[sl], tf, SCE_GXM_TRANSFER_LINEAR, dp, dx, dy,
+			                             (int32_t)dst->levelPitch[dl], sync, SCE_GXM_TRANSFER_FRAGMENT_SYNC, NULL);
+			if (res < 0) {
+				s_brokenSizes |= 1u << src->fi->bpp;
+				VKV_WARN("sceGxmTransferCopy failed 0x%08X, copying %u byte texels with the CPU from now on",
+				         (unsigned)res, (unsigned)src->fi->bpp);
+				/* regions already issued are copied again by the CPU, which is harmless */
+				vkv_device_wait_gpu(R->dev);
+				return false;
+			}
+		}
+		g_vkv.cur.copies++;
+	}
+	static bool s_told;
+	if (!s_told) {
+		s_told = true;
+		VKV_INFO("image copies run on the transfer unit");
+	}
+	R->dev->usedTransfer = true;
+	R->dev->transferPending = true;
+	R->dev->gpuBusy = true; /* CPU access to either image now waits for the transfer */
+	R->transferTail = true;
+	return true;
+}
+
 static void vkv_exec_copy_image(VkvReplay *R, const VkvCmdCopyImage *c) {
 	VkvImage *src = c->src, *dst = c->dst;
 	if (!src->ptr || !dst->ptr || src->fi->bpp != dst->fi->bpp || src->fi->block != dst->fi->block) return;
+	if (vkv_gpu_copy_image(R, c)) return;
 	if (R->dev->gpuBusy) vkv_device_wait_gpu(R->dev); /* the source may have been rendered to */
 	const uint32_t es = src->fi->bpp, bd = src->fi->block ? 4 : 1;
 	for (uint32_t i = 0; i < c->n; i++) {
@@ -1141,7 +1235,7 @@ static const char *vkv_cmd_name(uint16_t t) {
 		"SetStencil", "Draw", "DrawIndexed", "CopyBuffer", "CopyBufferToImage", "CopyImageToBuffer",
 		"UpdateBuffer", "FillBuffer", "ClearAttachments", "ClearColorImage", "Barrier", "FixedFunctionDraw",
 		"CopyImage", "BlitImage", "ClearDepthStencilImage", "DrawIndirect", "ExecuteCommands", "SetLineWidth",
-		"BeginQuery", "EndQuery", "ResetQueryPool", "WriteTimestamp", "SetEvent", "NextSubpass" };
+		"BeginQuery", "EndQuery", "ResetQueryPool", "WriteTimestamp", "SetEvent", "NextSubpass", "CopyQueryPoolResults" };
 	return t < sizeof(names) / sizeof(names[0]) ? names[t] : "?";
 }
 
@@ -1305,11 +1399,13 @@ static void vkv_replay(VkvReplay *R, struct VkCommandBuffer_T *cb) {
 		case VKV_CMD_QUERY_BEGIN: {
 			const VkvCmdQuery *c = (const VkvCmdQuery *)h;
 			if (R->inScene) vkv_query_begin(R->dev, R->ctx, c->pool, c->first);
+			R->queryActive = R->inScene && c->pool->type == VK_QUERY_TYPE_OCCLUSION && R->dev->visBufSet;
 			break;
 		}
 		case VKV_CMD_QUERY_END: {
 			const VkvCmdQuery *c = (const VkvCmdQuery *)h;
 			if (R->inScene) vkv_query_end(R->dev, R->ctx, c->pool, c->first);
+			R->queryActive = false;
 			break;
 		}
 		case VKV_CMD_QUERY_RESET: {
@@ -1321,6 +1417,16 @@ static void vkv_replay(VkvReplay *R, struct VkCommandBuffer_T *cb) {
 			const VkvCmdQuery *c = (const VkvCmdQuery *)h;
 			if (c->pool->values) c->pool->values[c->first] = vkv_time_us() * 1000u;
 			c->pool->written[c->first] = 1;
+			break;
+		}
+		case VKV_CMD_COPY_QUERY: {
+			/* The counters are final once the scenes that ended the queries are
+			 * done, so wait for those; the buffer is plain memory the CPU writes. */
+			const VkvCmdCopyQuery *c = (const VkvCmdCopyQuery *)h;
+			if (!c->dst->ptr) break;
+			if (c->pool->type == VK_QUERY_TYPE_OCCLUSION && R->dev->gpuBusy) vkv_device_wait_gpu(R->dev);
+			vkv_query_results(R->dev, c->pool, c->first, c->count, c->dst->size - c->off, c->dst->ptr + c->off,
+			                  c->stride, c->flags);
 			break;
 		}
 		case VKV_CMD_SET_EVENT: {
@@ -1375,6 +1481,10 @@ VkResult vkv_queue_execute(struct VkDevice_T *dev, uint32_t cbCount, const VkCom
 	/* A scene that failed to begin (or was skipped) never carried the
 	 * notification: wait for the GPU and signal on the CPU instead of
 	 * leaving the app blocked in vkWaitForFences forever. */
+	/* Transfers after the scene that carries the fence, or in a submit without
+	 * scenes, are not covered by it: finish them before the fence counts as
+	 * signaled. They are short copies and fills. */
+	if (fence && R.transferTail) sceGxmTransferFinish();
 	if (fence && fence->pending && !R.fenceAttached) {
 		VKV_WARN("fence could not be attached to a scene; signaling after a full GPU wait");
 		vkv_device_wait_gpu(dev);

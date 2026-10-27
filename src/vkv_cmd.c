@@ -581,8 +581,22 @@ VKAPI_ATTR void VKAPI_CALL vkCmdWriteTimestamp(VkCommandBuffer cb, VkPipelineSta
 
 VKAPI_ATTR void VKAPI_CALL vkCmdCopyQueryPoolResults(VkCommandBuffer cb, VkQueryPool pool, uint32_t first,
 	uint32_t count, VkBuffer dst, VkDeviceSize off, VkDeviceSize stride, VkQueryResultFlags flags) {
-	(void)cb; (void)pool; (void)first; (void)count; (void)dst; (void)off; (void)stride; (void)flags;
-	VKV_UNSUPPORTED("vkCmdCopyQueryPoolResults (use vkGetQueryPoolResults)");
+	VKV_TRACE("vkCmdCopyQueryPoolResults");
+	VkvQueryPool *p = VKV_ND(VkvQueryPool, pool);
+	VkvBuffer *b = VKV_ND(VkvBuffer, dst);
+	if (VKV_CHECK(VKV_OBJ_OK(p, VKV_MAGIC_QPOOL), "invalid query pool")) return;
+	if (VKV_CHECK(first + count <= p->count, "query %u out of range", (unsigned)(first + count - 1))) return;
+	if (VKV_CHECK(!cb->inRenderPass, "vkCmdCopyQueryPoolResults inside a render pass")) return;
+	if (VKV_CHECK(b && off < b->size, "vkCmdCopyQueryPoolResults: invalid buffer or offset")) return;
+	VkvCmdCopyQuery *c = VKV_CMD(cb, VkvCmdCopyQuery, VKV_CMD_COPY_QUERY);
+	if (!c) return;
+	c->pool = p;
+	c->first = first;
+	c->count = count;
+	c->dst = b;
+	c->off = (uint32_t)off;
+	c->stride = (uint32_t)stride;
+	c->flags = flags;
 }
 
 static void vkv_record_event(VkCommandBuffer cb, VkEvent event, bool value) {

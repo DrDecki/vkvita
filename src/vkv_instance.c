@@ -141,8 +141,8 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceProperties(VkPhysicalDevice pd, Vk
 	l->maxVertexInputBindings = SCE_GXM_MAX_VERTEX_STREAMS;
 	l->maxVertexInputAttributeOffset = 65535;
 	l->maxVertexInputBindingStride = 65535;
-	l->maxVertexOutputComponents = 64;
-	l->maxFragmentInputComponents = 64;
+	l->maxVertexOutputComponents = 40;  /* TEXCOORD0 to TEXCOORD9 */
+	l->maxFragmentInputComponents = 40;
 	l->maxFragmentOutputAttachments = 1;
 	l->maxColorAttachments = 1;
 	l->maxDrawIndexedIndexValue = 0xFFFFFFFFu;
