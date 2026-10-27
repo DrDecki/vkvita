@@ -1,8 +1,5 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/vkvita-logo-dark.svg">
-    <img src="docs/vkvita-logo.svg" alt="VkVita" width="420">
-  </picture>
+  <img src="docs/vkvita-logo.png" alt="VkVita" width="480">
 </p>
 
 VkVita is a wrapper between Vulkan and sceGxm. It lets you use a large part of the Vulkan 1.0 API on the PS Vita, with everything rendered on the SGX543MP4+ GPU. It is a static library (`libvkvita.a`) that implements the `vk*` functions directly, so there is no loader and no ICD. SPIR-V shaders are translated to Cg and compiled on the console.
@@ -114,7 +111,7 @@ Most Vulkan code works unchanged. The parts that are different on the Vita:
 
 - **Surface:** use `VK_EXT_headless_surface` or `vkvCreateDisplaySurface()`. The swapchain is always 960x544.
 - **Shaders:** SPIR-V works for the usual vertex and fragment shaders. Storage buffers and compute do not exist on GXM.
-- **Limits:** one color attachment per subpass, no compute, no MSAA yet. Mipmaps need power-of-two textures. The full list is in [docs/COVERAGE.md](docs/COVERAGE.md).
+- **Limits:** one color attachment per subpass, no compute. MSAA works with 2x and 4x. Mipmaps need power-of-two textures. The full list is in [docs/COVERAGE.md](docs/COVERAGE.md).
 
 There is also a small fixed function layer (`vkvita_ff.h`) for old GL 1.x style code, see [docs/FIXED_FUNCTION.md](docs/FIXED_FUNCTION.md).
 
@@ -130,6 +127,7 @@ Samples can be found in the `samples` folder.
 | `spirv_cube` | The cube with GLSL shaders compiled to SPIR-V, push constants, a uniform buffer and a texture |
 | `gpu_features` | Mipmaps (uploaded and blitted), a mipmapped cube map, a BC1 texture with a separate sampler, wide lines, indirect draws and occlusion queries |
 | `subpasses` | A render pass with three subpasses, one of them reading the first through an input attachment |
+| `msaa` | 4x and 2x MSAA with a resolve attachment, next to the same scene without multisampling |
 | `standalone_template` | A starting point for your own project |
 
 ## Tools
