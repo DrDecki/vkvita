@@ -29,6 +29,8 @@ SAMPLES = {
                       tagline="Three subpasses and an input attachment in one render pass"),
     "msaa": dict(label="MSAA", accent=(225, 70, 120), motif="msaa",
                  tagline="Jagged edges on the left, 4x multisampling on the right"),
+    "shader_tests": dict(label="Shaders", accent=(90, 190, 90), motif="tiles",
+                         tagline="Struct uniforms and sampler arrays, checked on the GPU"),
 }
 
 
@@ -153,6 +155,20 @@ def draw_motif(d, kind, accent, cx, cy, size):
         from PIL import ImageChops
         d._image.paste(right, (0, 0), ImageChops.multiply(mask, mask2))
         d.line([(cx, cy - size * 0.95), (cx, cy + size * 0.95)], fill=TEXT, width=max(SS, int(size * 0.03)))
+    elif kind == "tiles":
+        # a grid of check tiles, all passing
+        g = size * 0.12
+        cell = (2 * size - 3 * g) / 4
+        for j in range(2):
+            for i in range(4):
+                x0 = cx - size + i * (cell + g)
+                y0 = cy - size * 0.5 + j * (cell + g)
+                d.rounded_rectangle([x0, y0, x0 + cell, y0 + cell], radius=cell * 0.12,
+                                    fill=shade(accent, 0.9 + 0.1 * ((i + j) % 2)))
+                # a check mark in each
+                w = max(SS, int(cell * 0.09))
+                d.line([(x0 + cell * 0.25, y0 + cell * 0.52), (x0 + cell * 0.43, y0 + cell * 0.7),
+                        (x0 + cell * 0.76, y0 + cell * 0.32)], fill=TEXT, width=w)
     elif kind == "panels":
         g = size * 0.08
         cell = size - g / 2
