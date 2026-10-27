@@ -173,6 +173,9 @@ typedef struct VkvFormatInfo {
 } VkvFormatInfo;
 
 const VkvFormatInfo *vkv_format(VkFormat f);
+static inline bool vkv_format_sampleable(const VkvFormatInfo *fi) {
+	return fi && (fi->tex || fi->vk == VK_FORMAT_R8_UNORM);
+}
 
 struct VkPhysicalDevice_T {
 	VkvObject  obj;
@@ -325,6 +328,7 @@ typedef struct VkImageView_T {
 	VkFormat       format;
 	uint32_t       baseLevel, levelCount, baseLayer;
 	bool           cube;
+	SceGxmTextureFormat texFormat;
 	SceGxmTexture  tex;
 	bool           texValid;
 } VkvImageView;
@@ -335,6 +339,7 @@ typedef struct VkSampler_T {
 	SceGxmTextureMipFilter mipFilter;
 	SceGxmTextureAddrMode  addrU, addrV;
 	uint32_t               maxLevels;
+	uint32_t               lodBias;
 } VkvSampler;
 
 void vkv_texture_apply_sampler(SceGxmTexture *tex, const VkvSampler *s, uint32_t levels);

@@ -46,10 +46,17 @@ layout(std430, set = 0, binding = 6) readonly buffer Items {
     Item items[3];
 } items;
 
+layout(set = 0, binding = 7) uniform sampler2D layerTex;   /* layer 2 of an array image */
+layout(set = 0, binding = 8) uniform sampler2D renderedTex; /* layer 1, cleared by a render pass */
+layout(set = 0, binding = 9) uniform sampler2D alphaTex;    /* R8 seen as (1, 1, 1, R) */
+layout(set = 0, binding = 10) uniform sampler2D swappedTex; /* RGBA8 seen as BGRA */
+layout(set = 0, binding = 11) uniform sampler2D biasTex;    /* mip levels red, green, blue, white; bias +1 */
+
 layout(push_constant) uniform Push {
     int tile;
     int which;
     float weights[4];
+    float lodScale;
 } pc;
 
 layout(location = 0) in vec2 vUv;
@@ -74,7 +81,13 @@ void main() {
     else if (pc.tile == 8) ok = near(bones.bones[1] * vec4(0.0, 0.0, 0.0, 1.0), vec4(4.0, 5.0, 6.0, 1.0));
     else if (pc.tile == 9) ok = abs(values.v[3] - 3.5) < 0.01 && abs(values.v[7] - 7.5) < 0.01;
     else if (pc.tile == 10) ok = abs(items.items[2].b - 0.75) < 0.01 && near(items.header, vec4(1.0, 2.0, 3.0, 4.0));
-    else ok = abs(pc.weights[2] - 0.25) < 0.01 && abs(pc.weights[3] - 0.125) < 0.01;
+    else if (pc.tile == 11) ok = abs(pc.weights[2] - 0.25) < 0.01 && abs(pc.weights[3] - 0.125) < 0.01;
+    else if (pc.tile == 12) ok = near(texture(layerTex, uv), vec4(0.0, 0.0, 1.0, 1.0));
+    else if (pc.tile == 13) ok = near(texture(renderedTex, uv), vec4(1.0, 1.0, 0.0, 1.0));
+    else if (pc.tile == 14) ok = near(texture(alphaTex, uv), vec4(1.0, 1.0, 1.0, 0.5));
+    else if (pc.tile == 15) ok = near(texture(swappedTex, uv), vec4(0.0, 0.0, 1.0, 1.0));
+    /* the scale makes this pick mip level 1 (green); the sampler's bias of +1 moves it to level 2 */
+    else ok = near(texture(biasTex, vUv * pc.lodScale), vec4(0.0, 0.0, 1.0, 1.0));
     /* a darker border shows the tiles apart */
     float edge = min(min(vUv.x, 1.0 - vUv.x), min(vUv.y, 1.0 - vUv.y)) < 0.04 ? 0.6 : 1.0;
     outColor = (ok ? vec4(0.1, 0.85, 0.3, 1.0) : vec4(0.9, 0.15, 0.1, 1.0)) * vec4(vec3(edge), 1.0);

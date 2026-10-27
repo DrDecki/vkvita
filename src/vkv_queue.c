@@ -14,7 +14,7 @@ typedef struct VkvReplay {
 	uint32_t                  subpass;
 	float                     fbInv[4] __attribute__((aligned(16)));
 	VkvImage                 *colorImg, *depthImg;
-	VkvImageView             *colorView;
+	VkvImageView             *colorView, *depthView;
 	SceGxmColorSurface        color;
 	SceGxmDepthStencilSurface depth;
 	bool                      splits;
@@ -171,8 +171,9 @@ static void vkv_begin_scene(VkvReplay *R, bool loadDepth, bool clearDepth, float
 	if (R->depthImg) {
 		const VkvSubpass *sp = &rp->sub[R->subpass];
 		const VkvAttachmentDesc *a = &rp->att[sp->depth];
+		uint8_t *dptr = R->depthImg->ptr + (size_t)(R->depthView ? R->depthView->baseLayer : 0) * R->depthImg->layerSize;
 		sceGxmDepthStencilSurfaceInit(&R->depth, SCE_GXM_DEPTH_STENCIL_FORMAT_S8D24, SCE_GXM_DEPTH_STENCIL_SURFACE_TILED,
-		                              R->depthImg->alignedW, R->depthImg->ptr, NULL);
+		                              R->depthImg->alignedW, dptr, NULL);
 		if (clearDepth) {
 			sceGxmDepthStencilSurfaceSetBackgroundDepth(&R->depth, depth);
 			sceGxmDepthStencilSurfaceSetBackgroundStencil(&R->depth, (unsigned char)stencil);
@@ -259,7 +260,8 @@ static void vkv_start_subpass(VkvReplay *R, uint32_t idx, const uint8_t *next, c
 	R->subpass = idx;
 	R->colorView = sp->resolve >= 0 ? fb->views[sp->resolve] : sp->color >= 0 ? fb->views[sp->color] : NULL;
 	R->colorImg = R->colorView ? R->colorView->image : NULL;
-	R->depthImg = sp->depth >= 0 ? fb->views[sp->depth]->image : NULL;
+	R->depthView = sp->depth >= 0 ? fb->views[sp->depth] : NULL;
+	R->depthImg = R->depthView ? R->depthView->image : NULL;
 	R->splits = vkv_pass_has_splits(next, end);
 
 	if (R->colorImg && rp->firstUse[sp->color] == (int8_t)idx) {

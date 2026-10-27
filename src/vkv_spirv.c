@@ -131,7 +131,7 @@ typedef struct Tr {
 	uint32_t  uniCount, uniCap;
 	Sb        intInit;
 	spvc_compiler comp;
-	VkvSpirvStride strides[16];
+	VkvSpirvStride strides[64];
 	uint32_t  strideCount;
 	bool      pointSize;
 } Tr;
@@ -469,6 +469,8 @@ static void emit_struct_member(Tr *t, Sb *o, const char *type, const char *name,
 	spvc_type bt = spvc_compiler_get_type_handle(t->comp, b->type);
 	unsigned off = 0, stride = 0;
 	spvc_compiler_type_struct_member_offset(t->comp, bt, (unsigned)k, &off);
+	for (uint32_t q = 0; q < t->strideCount; q++)
+		if (t->strides[q].structId == b->type && t->strides[q].member == (uint32_t)k) off = t->strides[q].offset;
 	spvc_type_id mid = spvc_type_get_member_type(bt, (unsigned)k);
 	if (spvc_type_get_num_array_dimensions(spvc_compiler_get_type_handle(t->comp, mid)))
 		spvc_compiler_type_struct_member_array_stride(t->comp, bt, (unsigned)k, &stride);
@@ -520,12 +522,12 @@ static void emit_cbuffer_member(Tr *t, Sb *o, const char *line, Block *b) {
 		spvc_type bt = spvc_compiler_get_type_handle(t->comp, b->type);
 		unsigned st = 0;
 		if (spvc_compiler_type_struct_member_array_stride(t->comp, bt, (unsigned)member, &st) == SPVC_SUCCESS) stride = st;
-		for (uint32_t k = 0; k < t->strideCount; k++)
-			if (t->strides[k].structId == b->type && t->strides[k].member == (uint32_t)member) {
-				stride = t->strides[k].stride;
-				offset = t->strides[k].offset;
-			}
 	}
+	for (uint32_t k = 0; member >= 0 && k < t->strideCount; k++)
+		if (t->strides[k].structId == b->type && t->strides[k].member == (uint32_t)member) {
+			if (t->strides[k].stride) stride = t->strides[k].stride;
+			offset = t->strides[k].offset;
+		}
 	if (kind == VKV_SPIRV_FLOAT) {
 		sb_printf(o, "uniform %s %s%s;\n", type, name, arr);
 		add_uniform_strided(t, name, offset, stride, b, kind);
@@ -1027,7 +1029,7 @@ int vkv_spirv_translate(const uint32_t *words, size_t wordCount, VkvSpirvStage s
 		wordCount = builtinsCount;
 	}
 	int sr = br < 0 ? 0 : vkv_spirv_lower_ssbo(words, wordCount, g_storageArraySize, &ssbo, &ssboCount, t->strides,
-	                                           &t->strideCount, 16);
+	                                           &t->strideCount, 64);
 	if (sr > 0) {
 		logf_(&c, VKV_SPIRV_LOG_INFO, "storage buffers and packed arrays are read as uniform blocks (%u elements per "
 		      "runtime array)", (unsigned)g_storageArraySize);
