@@ -1,4 +1,9 @@
-# VkVita
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.svg">
+    <img src="docs/logo.svg" alt="VkVita" width="420">
+  </picture>
+</p>
 
 VkVita is a wrapper between Vulkan and sceGxm. It lets you use a large part of the Vulkan 1.0 API on the PS Vita, with everything rendered on the SGX543MP4+ GPU. It is a static library (`libvkvita.a`) that implements the `vk*` functions directly, so there is no loader and no ICD. SPIR-V shaders are translated to Cg and compiled on the console.
 
