@@ -20,6 +20,7 @@ typedef enum VkvSpirvScalar { VKV_SPIRV_FLOAT = 0, VKV_SPIRV_INT = 1, VKV_SPIRV_
 typedef struct VkvSpirvUniform {
 	char          *name;
 	uint32_t       offset;
+	uint32_t       stride;
 	int32_t        set;
 	uint32_t       binding;
 	VkvSpirvScalar scalar;
@@ -49,11 +50,19 @@ typedef void (*VkvSpirvLogFn)(VkvSpirvLogLevel level, const char *msg, void *use
 
 int  vkv_spirv_translate(const uint32_t *words, size_t wordCount, VkvSpirvStage stage, VkvSpirvLogFn log, void *user,
                          VkvSpirvResult *out);
+void vkv_spirv_set_storage_array_size(uint32_t elements);
 void vkv_spirv_free(VkvSpirvResult *r);
 
 int vkv_spirv_lower_subpass(const uint32_t *words, size_t wordCount, uint32_t **outWords, size_t *outCount);
 
 int vkv_spirv_lower_builtins(const uint32_t *words, size_t wordCount, uint32_t **outWords, size_t *outCount);
+
+typedef struct VkvSpirvStride {
+	uint32_t structId, member, stride, offset;
+} VkvSpirvStride;
+
+int vkv_spirv_lower_ssbo(const uint32_t *words, size_t wordCount, uint32_t arraySize, uint32_t **outWords,
+                         size_t *outCount, VkvSpirvStride *strides, uint32_t *strideCount, uint32_t maxStrides);
 
 int vkv_spirv_lower_intdiv(const uint32_t *words, size_t wordCount, uint32_t **outWords, size_t *outCount);
 

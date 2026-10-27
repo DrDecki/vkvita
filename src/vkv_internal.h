@@ -376,6 +376,7 @@ typedef struct VkShaderModule_T {
 	int8_t                   *uniSet;
 	uint8_t                  *uniBinding;
 	uint8_t                  *uniScalar;
+	uint16_t                 *uniStride;
 	SceGxmProgram            *prog[VKV_STAGE_COUNT];
 	bool                      progOwned[VKV_STAGE_COUNT];
 	SceGxmShaderPatcherId     pid[VKV_STAGE_COUNT];

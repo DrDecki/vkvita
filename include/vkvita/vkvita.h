@@ -53,6 +53,7 @@ typedef struct VkvConfig {
 	uint32_t       scenesPerFrame;
 	uint32_t       ffVertexBufferSize;
 	uint32_t       ffFrames;
+	uint32_t       storageArraySize;
 } VkvConfig;
 
 void     vkvGetDefaultConfig(VkvConfig *config);

@@ -39,6 +39,7 @@ void vkvGetDefaultConfig(VkvConfig *c) {
 	c->scenesPerFrame     = 4;
 	c->ffVertexBufferSize = 1024u * 1024;
 	c->ffFrames           = 3;
+	c->storageArraySize   = 64;
 }
 
 static void vkv_apply_config(const VkvConfig *c) {
@@ -57,6 +58,8 @@ static void vkv_apply_config(const VkvConfig *c) {
 	if (!g_vkv.cfg.scenesPerFrame) g_vkv.cfg.scenesPerFrame = 4;
 	if (g_vkv.cfg.ffVertexBufferSize < 64 * 1024) g_vkv.cfg.ffVertexBufferSize = 64 * 1024;
 	if (!g_vkv.cfg.ffFrames) g_vkv.cfg.ffFrames = 3;
+	if (!g_vkv.cfg.storageArraySize) g_vkv.cfg.storageArraySize = 64;
+	if (g_vkv.cfg.storageArraySize > 4096) g_vkv.cfg.storageArraySize = 4096;
 	if (g_vkv.logFdTried && g_vkv.logFd >= 0) sceIoClose(g_vkv.logFd);
 	g_vkv.logFd = -1;
 	g_vkv.logFdTried = false;
@@ -164,6 +167,7 @@ int vkvLoadConfigFile(const char *path) {
 		else if (!strcmp(k, "scenes_per_frame")) c.scenesPerFrame = strtoul(v, NULL, 0);
 		else if (!strcmp(k, "ff_buffer_kb"))     c.ffVertexBufferSize = strtoul(v, NULL, 0) * 1024;
 		else if (!strcmp(k, "ff_frames"))        c.ffFrames = strtoul(v, NULL, 0);
+		else if (!strcmp(k, "storage_array_size")) c.storageArraySize = strtoul(v, NULL, 0);
 		else VKV_WARN("config: unknown key '%s'", k);
 	}
 	c.logPath = logPath[0] ? logPath : NULL;
