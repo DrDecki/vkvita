@@ -341,7 +341,6 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateRenderPass(VkDevice device, const VkRende
 			          (unsigned)i, (unsigned)sp->inputAttachmentCount);
 			return VK_ERROR_FEATURE_NOT_PRESENT;
 		}
-		if (sp->pResolveAttachments) VKV_UNSUPPORTED("resolve attachments");
 	}
 	if (VKV_CHECK(ci->attachmentCount <= 8, "too many attachments")) return VK_ERROR_FEATURE_NOT_PRESENT;
 
@@ -355,18 +354,38 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateRenderPass(VkDevice device, const VkRende
 		rp->att[i].storeOp = ci->pAttachments[i].storeOp;
 		rp->att[i].stencilLoadOp = ci->pAttachments[i].stencilLoadOp;
 		rp->att[i].stencilStoreOp = ci->pAttachments[i].stencilStoreOp;
+		rp->att[i].samples = (uint32_t)ci->pAttachments[i].samples;
 	}
+	rp->samples = 0;
 	memset(rp->firstUse, -1, sizeof(rp->firstUse));
 	memset(rp->lastUse, -1, sizeof(rp->lastUse));
 	rp->subpassCount = ci->subpassCount;
 	for (uint32_t i = 0; i < ci->subpassCount; i++) {
 		const VkSubpassDescription *sp = &ci->pSubpasses[i];
 		VkvSubpass *s = &rp->sub[i];
-		s->color = s->depth = -1;
+		s->color = s->depth = s->resolve = -1;
 		if (sp->colorAttachmentCount && sp->pColorAttachments[0].attachment != VK_ATTACHMENT_UNUSED)
 			s->color = (int32_t)sp->pColorAttachments[0].attachment;
 		if (sp->pDepthStencilAttachment && sp->pDepthStencilAttachment->attachment != VK_ATTACHMENT_UNUSED)
 			s->depth = (int32_t)sp->pDepthStencilAttachment->attachment;
+		if (s->color >= 0 && sp->pResolveAttachments && sp->pResolveAttachments[0].attachment != VK_ATTACHMENT_UNUSED &&
+		    sp->pResolveAttachments[0].attachment < ci->attachmentCount)
+			s->resolve = (int32_t)sp->pResolveAttachments[0].attachment;
+		/* GXM has one sample count per render target */
+		int32_t sa[2] = { s->color, s->depth };
+		for (int k = 0; k < 2; k++) {
+			if (sa[k] < 0 || sa[k] >= (int32_t)ci->attachmentCount) continue;
+			uint32_t n = rp->att[sa[k]].samples;
+			if (!rp->samples) rp->samples = n;
+			else if (rp->samples != n) {
+				VKV_ERROR("vkCreateRenderPass: all color and depth attachments need the same sample count "
+				          "(%u and %u)", (unsigned)rp->samples, (unsigned)n);
+				free(rp);
+				return VK_ERROR_FEATURE_NOT_PRESENT;
+			}
+		}
+		if (s->resolve >= 0 && rp->att[s->color].samples > 1 && rp->att[s->color].storeOp == VK_ATTACHMENT_STORE_OP_STORE)
+			VKV_UNSUPPORTED("keeping a multisampled attachment that is also resolved (only the resolve target is written)");
 		for (uint32_t k = 0; k < sp->inputAttachmentCount; k++) {
 			uint32_t a = sp->pInputAttachments[k].attachment;
 			if (a == VK_ATTACHMENT_UNUSED || a >= ci->attachmentCount) continue;
@@ -394,6 +413,12 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateRenderPass(VkDevice device, const VkRende
 	for (int32_t i = (int32_t)rp->subpassCount - 1; i >= 0; i--) {
 		bool last = i + 1 == (int32_t)rp->subpassCount || rp->sub[i + 1].newScene;
 		rp->sub[i].runEnd = last ? (uint32_t)i : rp->sub[i + 1].runEnd;
+	}
+	if (!rp->samples) rp->samples = 1;
+	if (rp->samples != 1 && rp->samples != 2 && rp->samples != 4) {
+		VKV_ERROR("vkCreateRenderPass: %u samples, GXM can do 1, 2 or 4", (unsigned)rp->samples);
+		free(rp);
+		return VK_ERROR_FEATURE_NOT_PRESENT;
 	}
 	rp->colorIndex = rp->sub[0].color;
 	rp->depthIndex = rp->sub[0].depth;
@@ -442,7 +467,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateFramebuffer(VkDevice device, const VkFram
 	p.width = (uint16_t)fb->width;
 	p.height = (uint16_t)fb->height;
 	p.scenesPerFrame = (uint16_t)g_vkv.cfg.scenesPerFrame;
-	p.multisampleMode = SCE_GXM_MULTISAMPLE_NONE;
+	p.multisampleMode = vkv_gxm_multisample(rp->samples);
 	p.multisampleLocations = 0;
 	p.driverMemBlock = -1;
 	int r = sceGxmCreateRenderTarget(&p, &fb->rt);
@@ -736,8 +761,20 @@ VkResult vkv_create_pipeline(struct VkDevice_T *dev, const VkGraphicsPipelineCre
 		if (cb->logicOpEnable) VKV_UNSUPPORTED("logic ops");
 		if (cb->attachmentCount > 1) VKV_UNSUPPORTED("more than one blend attachment");
 	}
-	int r = sceGxmShaderPatcherCreateFragmentProgram(dev->patcher, p->fpid, outFmt, SCE_GXM_MULTISAMPLE_NONE, blendPtr,
-	                                                 p->vprog, &p->fp);
+	/* the fragment program has to match the sample count of the render target */
+	const VkPipelineMultisampleStateCreateInfo *ms = ci->pMultisampleState;
+	p->samples = ms ? (uint32_t)ms->rasterizationSamples : 1;
+	if (p->rp && p->samples != p->rp->samples) {
+		VKV_WARN("pipeline '%s': %u samples for a render pass with %u, using the render pass", p->fname,
+		         (unsigned)p->samples, (unsigned)p->rp->samples);
+		p->samples = p->rp->samples;
+	}
+	if (ms && ms->sampleShadingEnable) VKV_UNSUPPORTED("sample shading (shaded once per pixel)");
+	if (ms && ms->alphaToCoverageEnable) VKV_UNSUPPORTED("alpha to coverage");
+	if (ms && ms->pSampleMask && (ms->pSampleMask[0] & ((1u << p->samples) - 1)) != ((1u << p->samples) - 1))
+		VKV_UNSUPPORTED("sample masks");
+	int r = sceGxmShaderPatcherCreateFragmentProgram(dev->patcher, p->fpid, outFmt, vkv_gxm_multisample(p->samples),
+	                                                 blendPtr, p->vprog, &p->fp);
 	if (r < 0) {
 		VKV_ERROR("pipeline '%s': sceGxmShaderPatcherCreateFragmentProgram failed 0x%08X", p->fname, (unsigned)r);
 		p->fp = NULL;
@@ -815,8 +852,6 @@ VkResult vkv_create_pipeline(struct VkDevice_T *dev, const VkGraphicsPipelineCre
 		p->depthBiasFactor = (int)rs->depthBiasSlopeFactor;
 		p->depthBiasUnits = (int)rs->depthBiasConstantFactor;
 	}
-	if (ci->pMultisampleState && ci->pMultisampleState->rasterizationSamples != VK_SAMPLE_COUNT_1_BIT)
-		VKV_UNSUPPORTED("MSAA pipelines (rendered without multisampling)");
 
 	/* --- depth / stencil -------------------------------------------------- */
 	const VkPipelineDepthStencilStateCreateInfo *ds = ci->pDepthStencilState;

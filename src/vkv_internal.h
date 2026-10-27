@@ -319,6 +319,7 @@ typedef struct VkImage_T {
 	const VkvFormatInfo  *fi;
 	uint32_t              width, height;
 	uint32_t              mipLevels, arrayLayers; /* as requested */
+	uint32_t              samples;     /* 1, 2 or 4; color keeps only the resolved pixels */
 	uint32_t              levels, layers;         /* as stored */
 	VkImageUsageFlags     usage;
 	VkImageTiling         tiling;
@@ -342,6 +343,7 @@ typedef struct VkImage_T {
 } VkvImage;
 
 uint32_t vkv_swizzle_index(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+SceGxmMultisampleMode vkv_gxm_multisample(uint32_t samples);
 uint32_t vkv_image_level_width(const VkvImage *img, uint32_t level);
 uint32_t vkv_image_level_height(const VkvImage *img, uint32_t level);
 void     vkv_image_level_elems(const VkvImage *img, uint32_t level, uint32_t *ew, uint32_t *eh);
@@ -499,6 +501,7 @@ typedef struct VkvAttachmentDesc {
 	VkFormat            format;
 	VkAttachmentLoadOp  loadOp, stencilLoadOp;
 	VkAttachmentStoreOp storeOp, stencilStoreOp;
+	uint32_t            samples;
 } VkvAttachmentDesc;
 
 #define VKV_MAX_SUBPASSES 8
@@ -508,6 +511,7 @@ typedef struct VkvAttachmentDesc {
 
 typedef struct VkvSubpass {
 	int32_t  color, depth;              /* attachment index or -1 */
+	int32_t  resolve;                   /* where a multisampled color attachment is resolved to, or -1 */
 	int32_t  input[VKV_MAX_INPUTS];
 	uint32_t inputCount;
 	bool     newScene;                  /* starts its own GXM scene */
@@ -523,6 +527,7 @@ typedef struct VkRenderPass_T {
 	uint32_t          subpassCount;
 	VkvSubpass        sub[VKV_MAX_SUBPASSES];
 	int8_t            firstUse[8], lastUse[8]; /* subpass, -1 when unused */
+	uint32_t          samples;      /* of all color and depth attachments */
 } VkvRenderPass;
 
 typedef struct VkFramebuffer_T {
@@ -542,6 +547,7 @@ typedef struct VkPipeline_T {
 	VkvPipelineLayout        *layout;
 	VkvRenderPass            *rp;
 	uint32_t                  subpass;
+	uint32_t                  samples;
 	const SceGxmProgram      *vprog, *fprog;
 	SceGxmShaderPatcherId     vpid, fpid;
 	VkvShaderModule          *vmod, *fmod;

@@ -313,6 +313,11 @@ static bool vkv_draw_checks(VkCommandBuffer cb, const char *fn) {
 			return false;
 		}
 	}
+	if (crp && cb->pipeline->samples != crp->samples) {
+		vkv_fail(fn, "pipeline has %u samples, the render pass %u", (unsigned)cb->pipeline->samples,
+		         (unsigned)crp->samples);
+		return false;
+	}
 	return true;
 }
 
@@ -489,6 +494,27 @@ VKAPI_ATTR void VKAPI_CALL vkCmdCopyImage(VkCommandBuffer cb, VkImage s, VkImage
 	memcpy(c->r, r, n * sizeof(VkImageCopy));
 	if (vkv_validate() && (c->src->fi->bpp != c->dst->fi->bpp || c->src->fi->block != c->dst->fi->block))
 		vkv_fail(__func__, "source and destination formats have different texel sizes");
+}
+
+/* Multisampled color images hold the resolved pixels already, so resolving
+ * is a copy. */
+VKAPI_ATTR void VKAPI_CALL vkCmdResolveImage(VkCommandBuffer cb, VkImage s, VkImageLayout sl, VkImage d,
+                                             VkImageLayout dl, uint32_t n, const VkImageResolve *r) {
+	VKV_TRACE("vkCmdResolveImage");
+	VkImageCopy copies[16];
+	while (n) {
+		uint32_t k = VKV_MIN(n, 16u);
+		for (uint32_t i = 0; i < k; i++) {
+			copies[i].srcSubresource = r[i].srcSubresource;
+			copies[i].srcOffset = r[i].srcOffset;
+			copies[i].dstSubresource = r[i].dstSubresource;
+			copies[i].dstOffset = r[i].dstOffset;
+			copies[i].extent = r[i].extent;
+		}
+		vkCmdCopyImage(cb, s, sl, d, dl, k, copies);
+		r += k;
+		n -= k;
+	}
 }
 
 VKAPI_ATTR void VKAPI_CALL vkCmdBlitImage(VkCommandBuffer cb, VkImage s, VkImageLayout sl, VkImage d, VkImageLayout dl,

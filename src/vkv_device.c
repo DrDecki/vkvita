@@ -609,13 +609,19 @@ uint8_t *vkv_image_elem(const VkvImage *img, uint32_t level, uint32_t layer, uin
 	return base + (size_t)ey * img->levelPitch[level] + (size_t)ex * img->fi->bpp;
 }
 
+SceGxmMultisampleMode vkv_gxm_multisample(uint32_t samples) {
+	return samples == 4 ? SCE_GXM_MULTISAMPLE_4X : samples == 2 ? SCE_GXM_MULTISAMPLE_2X : SCE_GXM_MULTISAMPLE_NONE;
+}
+
 void vkv_image_setup_layout(VkvImage *img) {
 	const VkvFormatInfo *fi = img->fi;
 	img->levels = 1;
 	img->layers = 1;
 	if (fi->isDepth) {
-		img->alignedW = VKV_ALIGN(img->width, SCE_GXM_TILE_SIZEX);
-		img->alignedH = VKV_ALIGN(img->height, SCE_GXM_TILE_SIZEY);
+		/* GXM keeps every sample of a depth buffer: 2x doubles the rows,
+		 * 4x doubles rows and columns */
+		img->alignedW = VKV_ALIGN(img->width, SCE_GXM_TILE_SIZEX) * (img->samples == 4 ? 2 : 1);
+		img->alignedH = VKV_ALIGN(img->height, SCE_GXM_TILE_SIZEY) * (img->samples > 1 ? 2 : 1);
 		img->rowPitch = img->alignedW * 4;
 		img->levelPitch[0] = img->rowPitch;
 		img->levelOffset[0] = 0;
@@ -714,7 +720,17 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateImage(VkDevice device, const VkImageCreat
 		VKV_UNSUPPORTED("1D/3D images");
 		return VK_ERROR_FORMAT_NOT_SUPPORTED;
 	}
-	if (ci->samples != VK_SAMPLE_COUNT_1_BIT) VKV_UNSUPPORTED("multisampled images (rendered single-sampled)");
+	uint32_t samples = (uint32_t)ci->samples;
+	if (samples != 1 && samples != 2 && samples != 4) {
+		VKV_ERROR("vkCreateImage: %u samples, GXM can do 1, 2 or 4", (unsigned)samples);
+		return VK_ERROR_FORMAT_NOT_SUPPORTED;
+	}
+	if (samples > 1 && (ci->usage & (VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT)))
+		VKV_UNSUPPORTED("reading the samples of a multisampled image (it holds the resolved pixels)");
+	if (samples > 1 && (ci->mipLevels > 1 || ci->arrayLayers > 1)) {
+		VKV_ERROR("vkCreateImage: multisampled images have one level and one layer");
+		return VK_ERROR_FORMAT_NOT_SUPPORTED;
+	}
 	bool cube = (ci->flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) && ci->arrayLayers == 6;
 	if (ci->arrayLayers > 1 && !cube) VKV_UNSUPPORTED("array images (only layer 0 is stored)");
 	if (fi->block && (ci->usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT))) {
@@ -736,6 +752,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateImage(VkDevice device, const VkImageCreat
 	img->height = ci->extent.height;
 	img->mipLevels = ci->mipLevels;
 	img->arrayLayers = ci->arrayLayers;
+	img->samples = samples;
 	img->usage = ci->usage;
 	img->tiling = ci->tiling;
 	img->cube = cube;

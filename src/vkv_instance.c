@@ -155,10 +155,10 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceProperties(VkPhysicalDevice pd, Vk
 	l->maxFramebufferWidth = 4096;
 	l->maxFramebufferHeight = 4096;
 	l->maxFramebufferLayers = 1;
-	l->framebufferColorSampleCounts = VK_SAMPLE_COUNT_1_BIT;
-	l->framebufferDepthSampleCounts = VK_SAMPLE_COUNT_1_BIT;
-	l->framebufferStencilSampleCounts = VK_SAMPLE_COUNT_1_BIT;
-	l->framebufferNoAttachmentsSampleCounts = VK_SAMPLE_COUNT_1_BIT;
+	l->framebufferColorSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT;
+	l->framebufferDepthSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT;
+	l->framebufferStencilSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT;
+	l->framebufferNoAttachmentsSampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT;
 	l->sampledImageColorSampleCounts = VK_SAMPLE_COUNT_1_BIT;
 	l->sampledImageDepthSampleCounts = VK_SAMPLE_COUNT_1_BIT;
 	l->sampledImageIntegerSampleCounts = VK_SAMPLE_COUNT_1_BIT;
@@ -277,6 +277,11 @@ VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceImageFormatProperties(VkPhysic
 	if (fi->block && (usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)))
 		return VK_ERROR_FORMAT_NOT_SUPPORTED;
 	p->sampleCounts = VK_SAMPLE_COUNT_1_BIT;
+	/* multisampling is for render targets that are only resolved, not read */
+	if ((usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)) &&
+	    !(usage & (VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT)) && tiling == VK_IMAGE_TILING_OPTIMAL &&
+	    !(flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT))
+		p->sampleCounts |= VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT;
 	p->maxResourceSize = 64u * 1024 * 1024;
 	return VK_SUCCESS;
 }

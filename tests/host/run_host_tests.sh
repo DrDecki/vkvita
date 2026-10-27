@@ -60,6 +60,7 @@ build_sample template       "$ROOT/samples/standalone_template/main.c"
 build_sample spirv_cube     "$ROOT/samples/spirv_cube/main.c"
 build_sample gpu_features   "$ROOT/samples/gpu_features/main.c"
 build_sample subpasses      "$ROOT/samples/subpasses/main.c"
+build_sample msaa           "$ROOT/samples/msaa/main.c"
 
 fail=0
 run() { # label binary [env...]
@@ -90,6 +91,7 @@ CONFIG_TXT=$'debug = info, validation, shaders' FRAMES=12 \
   run spirv_debug "$OUT/spirv_cube"
 FRAMES=130 run gpu_features "$OUT/gpu_features"
 run subpasses "$OUT/subpasses"
+run msaa "$OUT/msaa"
 CONFIG_TXT=$'debug = info, validation, profile, shaders\ncompat = cpu_clear, gl_clip_space, invert_cull, ignore_scissor, shader_cache\nprofile_interval = 30' \
   run cube_compat "$OUT/textured_cube"
 CONFIG_TXT=$'debug = validation, gpu_sync, calls\ncompat = fast_transfers, no_vsync' FRAMES=12 \

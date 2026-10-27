@@ -44,7 +44,7 @@ RGBA16F, RG16F, R16F, R32F. Compressed formats must be power-of-two sized.
 | `vkCreateComputePipelines` | stub | Returns `VK_ERROR_FEATURE_NOT_PRESENT` |
 | `vkCreatePipelineLayout`, `vkCreatePipelineCache` (+ get/merge) | full | Pipeline cache data is empty (GXM patching is fast) |
 | `vkCreateDescriptorSetLayout`, pools, `vkAllocate/Free/ResetDescriptorSets`, `vkUpdateDescriptorSets` | partial | Uniform buffer (+dynamic), combined image sampler, sampled image, sampler, immutable samplers, input attachments (color only, SPIR-V shaders). Up to 4 sets. For Cg shaders binding n = GXM texture unit n; SPIR-V shaders carry their own table |
-| `vkCreateRenderPass`, `vkCreateFramebuffer` | partial | Up to 8 subpasses with one color and one depth/stencil attachment each, up to 4 color input attachments per subpass. A subpass gets its own GXM scene unless it renders to the same attachments as the one before and reads no inputs. Dependencies are implied by scene order. No resolve attachments |
+| `vkCreateRenderPass`, `vkCreateFramebuffer` | partial | Up to 8 subpasses with one color and one depth/stencil attachment each, up to 4 color input attachments per subpass. A subpass gets its own GXM scene unless it renders to the same attachments as the one before and reads no inputs. Dependencies are implied by scene order. 1, 2 or 4 samples, the same for all color and depth attachments of the pass; a resolve attachment receives the averaged samples directly (see Multisampling) |
 
 ## Commands
 
@@ -60,6 +60,7 @@ RGBA16F, RG16F, R16F, R32F. Compressed formats must be power-of-two sized.
 | `vkCmdClearColorImage` | full | Outside render passes |
 | `vkCmdPipelineBarrier` | full | Layout transitions are no-ops; GPU-to-transfer/host barriers wait for the GPU |
 | `vkCmdDrawIndirect`, `vkCmdDrawIndexedIndirect` | full | The parameters are read from the buffer when the command buffer is submitted |
+| `vkCmdResolveImage` | full | A copy, because multisampled color images already hold the averaged pixels |
 | `vkCmdCopyImage`, `vkCmdBlitImage` | full | On the CPU at submit. Blits scale and flip; LINEAR filters 8-bit formats, others use nearest. Mipmap generation with a blit chain works |
 | `vkCmdClearDepthStencilImage` | full | Applied as the background depth/stencil of the next scene that uses the image |
 | `vkCmdSetLineWidth` | full | Whole pixels, 1 to 16 |
@@ -76,6 +77,20 @@ RGBA16F, RG16F, R16F, R32F. Compressed formats must be power-of-two sized.
 | Occlusion queries | full | GXM visibility buffer, exact sample counts, up to 1024 queries. Reading results waits for the GPU |
 | Timestamp queries | partial | CPU time when the command buffer is submitted, in nanoseconds, not GPU time |
 | Pipeline statistics queries, `vkCmdCopyQueryPoolResults`, timeline semaphores | missing | |
+
+## Multisampling
+
+2x and 4x MSAA use GXM multisampled render targets. Color and depth
+attachments with 2 or 4 samples render their samples in the on-chip tile
+memory, and GXM averages them when it writes a tile back, so a multisampled
+color image only ever holds the resolved pixels and takes no more memory
+than a normal one. When the subpass has a resolve attachment, the scene
+writes straight into it and nothing is copied. Depth images keep every
+sample (twice the size for 2x, four times for 4x).
+
+Pipelines take the sample count of their render pass. Not available: sample
+shading, alpha to coverage, sample masks, and reading single samples of a
+multisampled image (`sampler2DMS`, `subpassLoad` of a multisampled input).
 
 ## Known gaps that matter for ports
 

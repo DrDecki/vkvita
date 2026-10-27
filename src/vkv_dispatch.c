@@ -38,6 +38,7 @@ static const VkvProc k_procs[] = {
 	{ "vkCmdNextSubpass", (PFN_vkVoidFunction)vkCmdNextSubpass },
 	{ "vkCmdPipelineBarrier", (PFN_vkVoidFunction)vkCmdPipelineBarrier },
 	{ "vkCmdPushConstants", (PFN_vkVoidFunction)vkCmdPushConstants },
+	{ "vkCmdResolveImage", (PFN_vkVoidFunction)vkCmdResolveImage },
 	{ "vkCmdResetEvent", (PFN_vkVoidFunction)vkCmdResetEvent },
 	{ "vkCmdResetQueryPool", (PFN_vkVoidFunction)vkCmdResetQueryPool },
 	{ "vkCmdSetBlendConstants", (PFN_vkVoidFunction)vkCmdSetBlendConstants },

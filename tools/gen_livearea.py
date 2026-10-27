@@ -27,6 +27,8 @@ SAMPLES = {
                          tagline="Mipmaps, cube maps, queries, lines and more"),
     "subpasses": dict(label="Subpass", accent=(40, 200, 210), motif="layers",
                       tagline="Three subpasses and an input attachment in one render pass"),
+    "msaa": dict(label="MSAA", accent=(225, 70, 120), motif="msaa",
+                 tagline="Jagged edges on the left, 4x multisampling on the right"),
 }
 
 
@@ -122,6 +124,35 @@ def draw_motif(d, kind, accent, cx, cy, size):
                    (cx + w / 2 - h * 0.5, y + h / 2), (cx - w / 2 - h * 0.5, y + h / 2)]
             d.polygon(pts, fill=shade(col, 0.4), outline=col)
             d.line(pts + [pts[0]], fill=col, width=max(SS, int(size * 0.045)))
+    elif kind == "msaa":
+        # one wedge: left of the split in coarse pixels, right of it smooth
+        tri = [(cx - size, cy + size * 0.8), (cx + size, cy - size * 0.8), (cx + size, cy + size * 0.8)]
+
+        def inside(x, y):
+            (x0, y0), (x1, y1), (x2, y2) = tri
+            d0 = (x1 - x0) * (y - y0) - (y1 - y0) * (x - x0)
+            d1 = (x2 - x1) * (y - y1) - (y2 - y1) * (x - x1)
+            d2 = (x0 - x2) * (y - y2) - (y0 - y2) * (x - x2)
+            return (d0 >= 0 and d1 >= 0 and d2 >= 0) or (d0 <= 0 and d1 <= 0 and d2 <= 0)
+        px = size / 7
+        y = cy - size * 0.8
+        while y < cy + size * 0.8 - 1:
+            x = cx - size
+            while x < cx - 1:
+                if inside(x + px / 2, y + px / 2):
+                    d.rectangle([x, y, x + px, y + px], fill=shade(accent, 0.8))
+                x += px
+            y += px
+        right = Image.new("RGB", d._image.size, BG)
+        rd = ImageDraw.Draw(right)
+        rd.polygon(tri, fill=accent)
+        mask = Image.new("L", d._image.size, 0)
+        ImageDraw.Draw(mask).rectangle([cx, 0, d._image.size[0], d._image.size[1]], fill=255)
+        mask2 = Image.new("L", d._image.size, 0)
+        ImageDraw.Draw(mask2).polygon(tri, fill=255)
+        from PIL import ImageChops
+        d._image.paste(right, (0, 0), ImageChops.multiply(mask, mask2))
+        d.line([(cx, cy - size * 0.95), (cx, cy + size * 0.95)], fill=TEXT, width=max(SS, int(size * 0.03)))
     elif kind == "panels":
         g = size * 0.08
         cell = size - g / 2

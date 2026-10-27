@@ -377,8 +377,8 @@ struct SceGxmVertexProgram {
 	const SceGxmProgram *prog; struct SceGxmRegisteredProgram *reg;
 	SceGxmVertexAttribute attrs[16]; unsigned na; SceGxmVertexStream streams[16]; unsigned ns;
 };
-struct SceGxmFragmentProgram { const SceGxmProgram *prog; struct SceGxmRegisteredProgram *reg; };
-struct SceGxmRenderTarget { unsigned w, h; };
+struct SceGxmFragmentProgram { const SceGxmProgram *prog; struct SceGxmRegisteredProgram *reg; SceGxmMultisampleMode ms; };
+struct SceGxmRenderTarget { unsigned w, h; SceGxmMultisampleMode ms; };
 struct SceGxmSyncObject { int dummy; };
 
 static SceGxmDisplayQueueCallback *g_displayCb;
@@ -488,11 +488,13 @@ int sceGxmShaderPatcherCreateVertexProgram(SceGxmShaderPatcher *sp, SceGxmShader
 int sceGxmShaderPatcherCreateFragmentProgram(SceGxmShaderPatcher *sp, SceGxmShaderPatcherId id,
 	SceGxmOutputRegisterFormat fmt, SceGxmMultisampleMode ms, const SceGxmBlendInfo *blend,
 	const SceGxmProgram *vprog, SceGxmFragmentProgram **out) {
-	(void)fmt; (void)ms; (void)blend;
+	(void)fmt; (void)blend;
+	if (ms != SCE_GXM_MULTISAMPLE_NONE && ms != SCE_GXM_MULTISAMPLE_2X && ms != SCE_GXM_MULTISAMPLE_4X)
+		mock_fail("fragment program multisample mode %d", (int)ms);
 	if (id->prog->type != SCE_GXM_FRAGMENT_PROGRAM) { mock_fail("CreateFragmentProgram with a vertex program"); return -1; }
 	if (!vprog || vprog->type != SCE_GXM_VERTEX_PROGRAM) mock_fail("CreateFragmentProgram: missing vertex program");
 	struct SceGxmFragmentProgram *fp = calloc(1, sizeof(*fp));
-	fp->prog = id->prog; fp->reg = id;
+	fp->prog = id->prog; fp->reg = id; fp->ms = ms;
 	id->refs++;
 	sp->fps++;
 	*out = fp;
@@ -511,7 +513,9 @@ int sceGxmCreateRenderTarget(const SceGxmRenderTargetParams *p, SceGxmRenderTarg
 	if (!p->width || !p->height || p->width > 4096 || p->height > 4096) mock_fail("render target size %ux%u", p->width, p->height);
 	if (!p->scenesPerFrame) mock_fail("scenesPerFrame 0");
 	struct SceGxmRenderTarget *r = calloc(1, sizeof(*r));
-	r->w = p->width; r->h = p->height;
+	r->w = p->width; r->h = p->height; r->ms = p->multisampleMode;
+	if (r->ms != SCE_GXM_MULTISAMPLE_NONE && r->ms != SCE_GXM_MULTISAMPLE_2X && r->ms != SCE_GXM_MULTISAMPLE_4X)
+		mock_fail("render target multisample mode %d", (int)r->ms);
 	*rt = r;
 	return 0;
 }
@@ -529,12 +533,13 @@ static unsigned color_bpp(SceGxmColorFormat f) {
 int sceGxmColorSurfaceInit(SceGxmColorSurface *s, SceGxmColorFormat fmt, SceGxmColorSurfaceType type,
 	SceGxmColorSurfaceScaleMode scale, SceGxmOutputRegisterSize ors, unsigned int w, unsigned int h,
 	unsigned int stride, void *data) {
-	(void)type; (void)scale; (void)ors;
+	(void)type; (void)ors;
 	memset(s, 0, sizeof(*s));
 	if (!data || ((uintptr_t)data & 3)) mock_fail("color surface data %p", data);
 	if (stride < w) mock_fail("color surface stride %u < width %u", stride, w);
 	memcpy(&s->pbeEmitWords[0], &data, sizeof(void *));
 	s->pbeEmitWords[2] = w; s->pbeEmitWords[3] = h; s->pbeEmitWords[4] = stride; s->pbeEmitWords[5] = color_bpp(fmt);
+	s->pbeSidebandWord = scale;
 	return 0;
 }
 int sceGxmColorSurfaceInitDisabled(SceGxmColorSurface *s) { memset(s, 0, sizeof(*s)); return 0; }
@@ -644,6 +649,7 @@ static void check_texture(const SceGxmTexture *t, const char *what) {
 /* Context state + draws                                                    */
 /* ------------------------------------------------------------------------ */
 static int g_inScene;
+static SceGxmMultisampleMode g_sceneMs;
 static const struct SceGxmVertexProgram *g_vp;
 static const struct SceGxmFragmentProgram *g_fp;
 static const void *g_streams[16];
@@ -669,14 +675,27 @@ int sceGxmBeginScene(SceGxmContext *ctx, unsigned int flags, const SceGxmRenderT
 	if (data) {
 		unsigned w = cs->pbeEmitWords[2], h = cs->pbeEmitWords[3], stride = cs->pbeEmitWords[4], bpp = cs->pbeEmitWords[5];
 		if (rt && (w != rt->w || h != rt->h)) mock_fail("color surface %ux%u != render target %ux%u", w, h, rt->w, rt->h);
+		unsigned scale = cs->pbeSidebandWord;
+		if (rt && rt->ms != SCE_GXM_MULTISAMPLE_NONE && scale != SCE_GXM_COLOR_SURFACE_SCALE_MSAA_DOWNSCALE)
+			mock_fail("multisampled render target with a color surface that is not downscaled");
+		if (rt && rt->ms == SCE_GXM_MULTISAMPLE_NONE && scale == SCE_GXM_COLOR_SURFACE_SCALE_MSAA_DOWNSCALE)
+			mock_fail("downscaled color surface on a render target without multisampling");
 		touch(data, (size_t)stride * bpp * (h - 1) + (size_t)w * bpp);
 	}
 	if (ds) {
 		unsigned stride = ds->zlsControl;
 		if (!ds->depthData) mock_fail("depth surface without data");
-		else if (rt) touch(ds->depthData, (size_t)stride * ((rt->h + 31) & ~31u) * 4);
+		else if (rt) {
+			/* every sample is stored: 2x doubles the rows, 4x rows and columns */
+			unsigned aw = (rt->w + 31) & ~31u, ah = (rt->h + 31) & ~31u;
+			unsigned needW = rt->ms == SCE_GXM_MULTISAMPLE_4X ? aw * 2 : aw;
+			unsigned rows = rt->ms == SCE_GXM_MULTISAMPLE_NONE ? ah : ah * 2;
+			if (stride < needW) mock_fail("depth stride %u, the render target needs %u samples per row", stride, needW);
+			touch(ds->depthData, (size_t)stride * rows * 4);
+		}
 	}
 	g_inScene = 1;
+	g_sceneMs = rt ? rt->ms : SCE_GXM_MULTISAMPLE_NONE;
 	g_scenes++;
 	memset(g_ftexSet, 0, sizeof(g_ftexSet));
 	g_vp = NULL; g_fp = NULL;
@@ -794,6 +813,7 @@ int sceGxmDraw(SceGxmContext *c, SceGxmPrimitiveType prim, SceGxmIndexFormat ifm
 	if (!g_inScene) { mock_fail("draw outside scene"); return -1; }
 	if (!g_vp || !g_fp) { mock_fail("draw without programs"); return -1; }
 	if (!idx || !count) { mock_fail("draw without indices"); return -1; }
+	if (g_fp->ms != g_sceneMs) { mock_fail("draw: fragment program multisample mode %d, render target %d", (int)g_fp->ms, (int)g_sceneMs); return -1; }
 	int want32 = ifmt == SCE_GXM_INDEX_FORMAT_U32;
 	for (unsigned s = 0; s < g_vp->ns; s++) {
 		int src32 = g_vp->streams[s].indexSource == SCE_GXM_INDEX_SOURCE_INDEX_32BIT;
