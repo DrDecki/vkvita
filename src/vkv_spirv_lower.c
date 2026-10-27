@@ -519,11 +519,67 @@ int vkv_spirv_lower_intdiv(const uint32_t *w, size_t n, uint32_t **outWords, siz
  * only reads is just a big uniform block. The storage class becomes Uniform,
  * BufferBlock becomes Block, a runtime array gets a fixed size and
  * OpArrayLength returns that size. VkVita feeds the block like any other
- * uniform buffer, from the storage buffer descriptor. */
+ * uniform buffer, from the storage buffer descriptor.
+ *
+ * std430 (storage buffers, push constants) packs arrays of scalars and
+ * vec2s tighter than an HLSL cbuffer can describe. Such a block gets new
+ * offsets and 16 byte array strides in the SPIR-V, only so it can be
+ * written out; the old offset and stride of every moved member go back to
+ * VkVita, which keeps reading the buffer with the real layout. */
 enum {
-	OP_TYPE_ARRAY = 28, OP_TYPE_RUNTIME_ARRAY = 29, OP_ARRAY_LENGTH = 68, OP_COPY_OBJECT = 83,
+	OP_TYPE_MATRIX = 24, OP_TYPE_ARRAY = 28, OP_TYPE_RUNTIME_ARRAY = 29, OP_ARRAY_LENGTH = 68, OP_COPY_OBJECT = 83,
 	DEC_BUFFER_BLOCK = 3, DEC_NON_WRITABLE = 24, SC_STORAGE_BUFFER = 12, DEC_ARRAY_STRIDE = 6, SC_PUSH_CONSTANT = 9,
+	DEC_MATRIX_STRIDE = 7,
 };
+#define LOWER_MAX_MEMBERS 64
+
+typedef struct {
+	uint8_t  *kind;      /* 1 scalar, 2 vector, 3 matrix, 4 array, 5 runtime array, 6 struct */
+	uint32_t *comps;     /* vector: components; matrix: columns */
+	uint32_t *elem;      /* vector/matrix/array: element type */
+	uint32_t *len;       /* array: length constant id */
+	uint32_t *stride;    /* array: ArrayStride */
+	uint32_t *cval;      /* constant values */
+	uint32_t *first;     /* struct: index of its members in the lists below */
+	uint32_t *count;     /* struct: members */
+	uint32_t  bound, runtimeSize;
+	uint32_t  memType[4096], memOffset[4096], memMatStride[4096], nMem;
+} Types;
+
+/* std140-like size of a type as a cbuffer member, 0 when it cannot be placed */
+static uint32_t cb_size(const Types *T, uint32_t id, int depth);
+
+static uint32_t cb_array_len(const Types *T, uint32_t id) {
+	if (T->kind[id] == 5) return T->runtimeSize;
+	uint32_t c = T->len[id];
+	return c < T->bound ? T->cval[c] : 0;
+}
+
+static uint32_t cb_struct_size(const Types *T, uint32_t id, int depth) {
+	uint32_t end = 0;
+	for (uint32_t m = 0; m < T->count[id]; m++) {
+		uint32_t k = T->first[id] + m, sz = cb_size(T, T->memType[k], depth + 1);
+		if (!sz) return 0;
+		if (T->memOffset[k] + sz > end) end = T->memOffset[k] + sz;
+	}
+	return (end + 15) & ~15u;
+}
+
+static uint32_t cb_size(const Types *T, uint32_t id, int depth) {
+	if (id >= T->bound || depth > 8) return 0;
+	switch (T->kind[id]) {
+	case 1: return 4;
+	case 2: return 4 * T->comps[id];
+	case 3: return 16 * T->comps[id];
+	case 4: case 5: {
+		uint32_t n = cb_array_len(T, id), es = cb_size(T, T->elem[id], depth + 1);
+		if (!n || !es) return 0;
+		return (n - 1) * ((es + 15) & ~15u) + es;
+	}
+	case 6: return cb_struct_size(T, id, depth);
+	default: return 0;
+	}
+}
 
 int vkv_spirv_lower_ssbo(const uint32_t *w, size_t n, uint32_t arraySize, uint32_t **outWords, size_t *outCount,
                          VkvSpirvStride *strides, uint32_t *strideCount, uint32_t maxStrides) {
@@ -534,23 +590,31 @@ int vkv_spirv_lower_ssbo(const uint32_t *w, size_t n, uint32_t arraySize, uint32
 	uint32_t bound = w[3];
 	if (bound > 1u << 22) return -1;
 
-	/* per id */
-	uint8_t *blockKind = calloc(bound, 1);   /* 1 BufferBlock struct, 2 Block struct */
-	uint8_t *varRO = calloc(bound, 1);       /* variable decorated NonWritable */
-	uint8_t *isArray = calloc(bound, 1);
-	uint32_t *members = calloc(bound, sizeof(uint32_t));    /* struct: member count */
-	uint32_t *roMembers = calloc(bound, sizeof(uint32_t));  /* struct: members marked NonWritable */
-	uint32_t *lastType = calloc(bound, sizeof(uint32_t));   /* struct: type of the last member */
-	uint32_t *lastOffset = calloc(bound, sizeof(uint32_t)); /* struct: offset of the last member */
-	uint32_t *arrStride = calloc(bound, sizeof(uint32_t));
-	uint32_t *ptrType = calloc(bound, sizeof(uint32_t));
-	uint32_t *widen = calloc(bound, sizeof(uint32_t));      /* struct: 1 + new offset of its last member */
 	int result = 0;
-	if (!blockKind || !varRO || !isArray || !members || !roMembers || !lastType || !lastOffset || !arrStride ||
-	    !ptrType || !widen) {
+	Types *T = calloc(1, sizeof(*T));
+	uint8_t *blockKind = calloc(bound, 1), *varRO = calloc(bound, 1);
+	uint32_t *roMembers = calloc(bound, sizeof(uint32_t)), *ptrType = calloc(bound, sizeof(uint32_t));
+	uint32_t *newStride = calloc(bound, sizeof(uint32_t));  /* array type: stride to write */
+	uint32_t *relayout = calloc(bound, sizeof(uint32_t));   /* struct: 1 + index of its new offsets */
+	uint32_t *newOffset = calloc(4096, sizeof(uint32_t));
+	if (T) {
+		T->bound = bound;
+		T->runtimeSize = arraySize;
+		T->kind = calloc(bound, 1);
+		T->comps = calloc(bound, sizeof(uint32_t));
+		T->elem = calloc(bound, sizeof(uint32_t));
+		T->len = calloc(bound, sizeof(uint32_t));
+		T->stride = calloc(bound, sizeof(uint32_t));
+		T->cval = calloc(bound, sizeof(uint32_t));
+		T->first = calloc(bound, sizeof(uint32_t));
+		T->count = calloc(bound, sizeof(uint32_t));
+	}
+	if (!T || !T->kind || !T->comps || !T->elem || !T->len || !T->stride || !T->cval || !T->first || !T->count ||
+	    !blockKind || !varRO || !roMembers || !ptrType || !newStride || !relayout || !newOffset) {
 		result = -1;
 		goto out;
 	}
+
 	uint32_t uintId = 0;
 	bool any = false, writable = false;
 	for (size_t i = 5; i < n;) {
@@ -561,57 +625,109 @@ int vkv_spirv_lower_ssbo(const uint32_t *w, size_t n, uint32_t arraySize, uint32
 			if (a[1] == DEC_BUFFER_BLOCK) blockKind[a[0]] = 1;
 			else if (a[1] == DEC_BLOCK && !blockKind[a[0]]) blockKind[a[0]] = 2;
 			else if (a[1] == DEC_NON_WRITABLE) varRO[a[0]] = 1;
-			else if (a[1] == DEC_ARRAY_STRIDE && len >= 4) arrStride[a[0]] = a[2];
-		} else if (op == OP_MEMBER_DECORATE && len >= 4 && a[0] < bound) {
-			if (a[2] == DEC_NON_WRITABLE) roMembers[a[0]]++;
+			else if (a[1] == DEC_ARRAY_STRIDE && len >= 4) T->stride[a[0]] = a[2];
+		} else if (op == OP_MEMBER_DECORATE && len >= 4 && a[0] < bound && a[2] == DEC_NON_WRITABLE) {
+			roMembers[a[0]]++;
 		} else if (op == OP_TYPE_STRUCT && a[0] < bound) {
-			members[a[0]] = len - 2;
-			if (len > 2) lastType[a[0]] = a[len - 2];
-		} else if ((op == OP_TYPE_ARRAY || op == OP_TYPE_RUNTIME_ARRAY) && a[0] < bound) {
-			isArray[a[0]] = 1;
+			T->kind[a[0]] = 6;
+			T->first[a[0]] = T->nMem;
+			T->count[a[0]] = len - 2;
+			for (uint32_t m = 0; m + 2 < len && T->nMem < 4096; m++) {
+				T->memType[T->nMem] = a[1 + m];
+				T->memOffset[T->nMem] = 0;
+				T->memMatStride[T->nMem] = 16;
+				T->nMem++;
+			}
+		} else if ((op == OP_TYPE_INT || op == OP_TYPE_FLOAT || op == OP_TYPE_BOOL) && a[0] < bound) {
+			T->kind[a[0]] = 1;
+			if (op == OP_TYPE_INT && a[1] == 32 && !a[2] && !uintId) uintId = a[0];
+		} else if (op == OP_TYPE_VECTOR && a[0] < bound) {
+			T->kind[a[0]] = 2; T->elem[a[0]] = a[1]; T->comps[a[0]] = a[2];
+		} else if (op == OP_TYPE_MATRIX && a[0] < bound) {
+			T->kind[a[0]] = 3; T->elem[a[0]] = a[1]; T->comps[a[0]] = a[2];
+		} else if (op == OP_TYPE_ARRAY && a[0] < bound) {
+			T->kind[a[0]] = 4; T->elem[a[0]] = a[1]; T->len[a[0]] = a[2];
+		} else if (op == OP_TYPE_RUNTIME_ARRAY && a[0] < bound) {
+			T->kind[a[0]] = 5; T->elem[a[0]] = a[1];
+		} else if (op == OP_CONSTANT && len >= 4 && a[1] < bound) {
+			T->cval[a[1]] = a[2];
 		} else if (op == OP_TYPE_POINTER && a[0] < bound) {
 			ptrType[a[0]] = a[2];
-		} else if (op == OP_TYPE_INT && a[1] == 32 && !a[2] && !uintId) {
-			uintId = a[0];
 		}
 		i += len;
 	}
-	/* member offsets come after the struct sizes are known */
+	/* member offsets and matrix strides, once every struct is known */
 	for (size_t i = 5; i < n;) {
 		uint32_t len = w[i] >> 16, op = w[i] & 0xFFFF;
 		const uint32_t *a = w + i + 1;
-		if (op == OP_MEMBER_DECORATE && len >= 5 && a[0] < bound && a[2] == DEC_OFFSET && members[a[0]] &&
-		    a[1] == members[a[0]] - 1)
-			lastOffset[a[0]] = a[3];
-		i += len;
-	}
-	/* the storage buffer and push constant variables */
-	for (size_t i = 5; i < n;) {
-		uint32_t len = w[i] >> 16, op = w[i] & 0xFFFF;
-		const uint32_t *a = w + i + 1;
-		if (op == OP_VARIABLE && a[0] < bound && a[1] < bound) {
-			uint32_t pointee = ptrType[a[0]] < bound ? ptrType[a[0]] : 0;
-			bool ssbo = a[2] == SC_STORAGE_BUFFER || (a[2] == SC_UNIFORM && pointee && blockKind[pointee] == 1);
-			if (ssbo) {
-				any = true;
-				bool ro = varRO[a[1]] || (pointee && members[pointee] && roMembers[pointee] >= members[pointee]);
-				if (!ro) writable = true;
-			}
-			/* std430 arrays of scalars and vec2s pack tighter than a cbuffer can say. One at the
-			 * end of the block gets a 16 byte stride and offset, nothing follows it to overlap;
-			 * VkVita still reads the buffer with the real layout. */
-			uint32_t last = pointee ? lastType[pointee] : 0;
-			if ((ssbo || a[2] == SC_PUSH_CONSTANT) && last && last < bound && isArray[last] && arrStride[last] &&
-			    (arrStride[last] % 16 || lastOffset[pointee] % 16) && !widen[pointee] && *strideCount < maxStrides) {
-				widen[pointee] = 1 + ((lastOffset[pointee] + 15) & ~15u);
-				strides[*strideCount].structId = pointee;
-				strides[*strideCount].member = members[pointee] - 1;
-				strides[*strideCount].stride = arrStride[last];
-				strides[*strideCount].offset = lastOffset[pointee];
-				(*strideCount)++;
-			}
+		if (op == OP_MEMBER_DECORATE && len >= 5 && a[0] < bound && T->kind[a[0]] == 6 && a[1] < T->count[a[0]]) {
+			uint32_t k = T->first[a[0]] + a[1];
+			if (k < T->nMem && a[2] == DEC_OFFSET) T->memOffset[k] = a[3];
+			if (k < T->nMem && a[2] == DEC_MATRIX_STRIDE) T->memMatStride[k] = a[3];
 		}
 		i += len;
+	}
+
+	/* the storage buffer and push constant blocks */
+	uint32_t nNew = 0;
+	for (size_t i = 5; i < n;) {
+		uint32_t len = w[i] >> 16, op = w[i] & 0xFFFF;
+		const uint32_t *a = w + i + 1;
+		i += len;
+		if (op != OP_VARIABLE || a[0] >= bound || a[1] >= bound) continue;
+		uint32_t st = ptrType[a[0]] < bound ? ptrType[a[0]] : 0;
+		bool ssbo = a[2] == SC_STORAGE_BUFFER || (a[2] == SC_UNIFORM && st && blockKind[st] == 1);
+		if (ssbo) {
+			any = true;
+			bool ro = varRO[a[1]] || (st && T->count[st] && roMembers[st] >= T->count[st]);
+			if (!ro) writable = true;
+		}
+		if (!(ssbo || a[2] == SC_PUSH_CONSTANT) || !st || T->kind[st] != 6 || relayout[st]) continue;
+
+		/* place the members the way a cbuffer can: vectors inside one 16 byte
+		 * register, arrays, matrices and structs on register boundaries, array
+		 * elements 16 bytes apart */
+		uint32_t cursor = 0, cnt = T->count[st], base = T->first[st];
+		bool changed = false, ok = cnt <= LOWER_MAX_MEMBERS && nNew + cnt <= 4096;
+		for (uint32_t m = 0; m < cnt && ok; m++) {
+			uint32_t k = base + m, t = T->memType[k];
+			uint32_t sz = cb_size(T, t, 0), off;
+			if (!sz) { ok = false; break; }
+			uint8_t kd = T->kind[t];
+			if (kd == 3 && T->memMatStride[k] != 16) { ok = false; break; } /* tight std430 mat2 */
+			if (kd >= 3) {
+				off = (cursor + 15) & ~15u;
+				if (kd == 4 || kd == 5) {
+					uint32_t es = cb_size(T, T->elem[t], 1), ns = (es + 15) & ~15u;
+					if (T->stride[t] != ns) {
+						/* the stride is a property of the array type: every use must agree */
+						if (T->kind[T->elem[t]] > 2 || (newStride[t] && newStride[t] != ns)) { ok = false; break; }
+						newStride[t] = ns;
+						changed = true;
+					}
+				}
+			} else {
+				off = (cursor + 3) & ~3u;
+				if ((off & 15) + sz > 16) off = (off + 15) & ~15u;
+			}
+			if (off < T->memOffset[k] && !changed) off = T->memOffset[k]; /* keep gaps the shader had */
+			if (off != T->memOffset[k]) changed = true;
+			newOffset[nNew + m] = off;
+			cursor = off + sz;
+		}
+		if (!ok || !changed) continue;
+		relayout[st] = 1 + nNew;
+		for (uint32_t m = 0; m < cnt && *strideCount < maxStrides; m++) {
+			uint32_t k = base + m, t = T->memType[k];
+			bool arr = T->kind[t] == 4 || T->kind[t] == 5;
+			if (newOffset[nNew + m] == T->memOffset[k] && !(arr && newStride[t])) continue;
+			strides[*strideCount].structId = st;
+			strides[*strideCount].member = m;
+			strides[*strideCount].stride = arr && newStride[t] ? T->stride[t] : 0;
+			strides[*strideCount].offset = T->memOffset[k];
+			(*strideCount)++;
+		}
+		nNew += cnt;
 	}
 	if (writable || (!any && !*strideCount)) goto out; /* nothing to do, or a buffer GXM cannot write */
 
@@ -625,17 +741,13 @@ int vkv_spirv_lower_ssbo(const uint32_t *w, size_t n, uint32_t arraySize, uint32
 	for (size_t i = 5; i < n;) {
 		uint32_t len = w[i] >> 16, op = w[i] & 0xFFFF;
 		const uint32_t *a = w + i + 1;
-		bool widened = false;
-		if (op == OP_DECORATE && len >= 4 && a[1] == DEC_ARRAY_STRIDE && a[0] < bound)
-			for (uint32_t k = 0; k < *strideCount; k++)
-				if (lastType[strides[k].structId] == a[0]) widened = true;
 		if (op == OP_DECORATE && len >= 3 && a[1] == DEC_BUFFER_BLOCK) {
 			INST(&o, OP_DECORATE, a[0], DEC_BLOCK);
-		} else if (widened) {
-			INST(&o, OP_DECORATE, a[0], DEC_ARRAY_STRIDE, 16);
-		} else if (op == OP_MEMBER_DECORATE && len >= 5 && a[0] < bound && a[2] == DEC_OFFSET && widen[a[0]] &&
-		           a[1] == members[a[0]] - 1) {
-			INST(&o, OP_MEMBER_DECORATE, a[0], a[1], DEC_OFFSET, widen[a[0]] - 1);
+		} else if (op == OP_DECORATE && len >= 4 && a[1] == DEC_ARRAY_STRIDE && a[0] < bound && newStride[a[0]]) {
+			INST(&o, OP_DECORATE, a[0], DEC_ARRAY_STRIDE, newStride[a[0]]);
+		} else if (op == OP_MEMBER_DECORATE && len >= 5 && a[0] < bound && a[2] == DEC_OFFSET && relayout[a[0]] &&
+		           a[1] < T->count[a[0]]) {
+			INST(&o, OP_MEMBER_DECORATE, a[0], a[1], DEC_OFFSET, newOffset[relayout[a[0]] - 1 + a[1]]);
 		} else if (op == OP_TYPE_POINTER && a[1] == SC_STORAGE_BUFFER) {
 			INST(&o, OP_TYPE_POINTER, a[0], SC_UNIFORM, a[2]);
 		} else if (op == OP_VARIABLE && len >= 4 && a[2] == SC_STORAGE_BUFFER) {
@@ -664,7 +776,10 @@ int vkv_spirv_lower_ssbo(const uint32_t *w, size_t n, uint32_t arraySize, uint32
 	result = 1;
 out:
 	if (result <= 0) *strideCount = 0;
-	free(blockKind); free(varRO); free(isArray); free(members); free(roMembers); free(lastType); free(lastOffset);
-	free(arrStride); free(ptrType); free(widen);
+	if (T) {
+		free(T->kind); free(T->comps); free(T->elem); free(T->len); free(T->stride); free(T->cval); free(T->first);
+		free(T->count);
+	}
+	free(T); free(blockKind); free(varRO); free(roMembers); free(ptrType); free(newStride); free(relayout); free(newOffset);
 	return result;
 }

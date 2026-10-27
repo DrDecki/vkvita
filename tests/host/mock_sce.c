@@ -648,6 +648,11 @@ int sceGxmTextureInitCube(SceGxmTexture *t, const void *data, SceGxmTextureForma
 	return tex_init(t, data, fmt, w, h, mips, 1, 6);
 }
 int sceGxmTextureSetMipFilter(SceGxmTexture *t, SceGxmTextureMipFilter f) { (void)t; (void)f; return 0; }
+int sceGxmTextureSetLodBias(SceGxmTexture *t, unsigned int bias) {
+	(void)t;
+	if (bias > 63) mock_fail("lod bias %u > 63", bias);
+	return 0;
+}
 int sceGxmTextureSetMipmapCount(SceGxmTexture *t, unsigned int n) { (void)t; if (!n || n > 13) mock_fail("mip count %u", n); return 0; }
 int sceGxmTextureSetGammaMode(SceGxmTexture *t, SceGxmTextureGammaMode g) { (void)t; (void)g; return 0; }
 int sceGxmColorSurfaceSetGammaMode(SceGxmColorSurface *s, SceGxmColorSurfaceGammaMode g) { (void)s; (void)g; return 0; }

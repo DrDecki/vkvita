@@ -617,6 +617,7 @@ void vkv_image_setup_layout(VkvImage *img) {
 	img->levels = 1;
 	img->layers = 1;
 	if (fi->isDepth) {
+		img->layers = VKV_MAX(img->arrayLayers, 1u);
 		/* GXM keeps every sample of a depth buffer: 2x doubles the rows,
 		 * 4x doubles rows and columns */
 		img->alignedW = VKV_ALIGN(img->width, SCE_GXM_TILE_SIZEX) * (img->samples == 4 ? 2 : 1);
@@ -624,10 +625,13 @@ void vkv_image_setup_layout(VkvImage *img) {
 		img->rowPitch = img->alignedW * 4;
 		img->levelPitch[0] = img->rowPitch;
 		img->levelOffset[0] = 0;
-		img->size = img->layerSize = img->alignedW * img->alignedH * 4;
+		img->layerSize = img->alignedW * img->alignedH * 4;
+		img->size = img->layerSize * img->layers;
 		img->alignment = 4096;
 		return;
 	}
+	/* every layer is stored; a cube keeps its six faces below */
+	img->layers = VKV_MAX(img->arrayLayers, 1u);
 	bool pot = vkv_is_pot(img->width) && vkv_is_pot(img->height);
 	uint32_t maxLevels = vkv_log2(VKV_MAX(img->width, img->height)) + 1;
 	img->levels = VKV_MIN(VKV_MAX(img->mipLevels, 1u), VKV_MIN(maxLevels, (uint32_t)VKV_MAX_LEVELS));
@@ -687,7 +691,9 @@ void vkv_image_setup_layout(VkvImage *img) {
 		}
 		img->layerSize = VKV_ALIGN(total, faceAlign);
 	} else {
-		img->layerSize = VKV_ALIGN(used, 16);
+		/* layers of render targets start on page boundaries like the image itself */
+		img->layerSize = img->layers > 1 && (img->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) ? VKV_ALIGN(used, 4096)
+		                                                                                   : VKV_ALIGN(used, 16);
 	}
 	img->alignedW = fi->block ? img->width : img->levelPitch[0] / fi->bpp;
 	img->alignedH = img->height;
@@ -731,13 +737,18 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateImage(VkDevice device, const VkImageCreat
 		return VK_ERROR_FORMAT_NOT_SUPPORTED;
 	}
 	bool cube = (ci->flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) && ci->arrayLayers == 6;
-	if (ci->arrayLayers > 1 && !cube) VKV_UNSUPPORTED("array images (only layer 0 is stored)");
+	if (ci->arrayLayers > 256) {
+		VKV_ERROR("vkCreateImage: %u array layers, at most 256", (unsigned)ci->arrayLayers);
+		return VK_ERROR_FORMAT_NOT_SUPPORTED;
+	}
 	if (fi->block && (ci->usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT))) {
 		VKV_ERROR("vkCreateImage: compressed formats cannot be render targets");
 		return VK_ERROR_FORMAT_NOT_SUPPORTED;
 	}
 	if (cube && (ci->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT))
 		VKV_UNSUPPORTED("rendering into cube map faces");
+	if (ci->flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT && ci->arrayLayers > 6)
+		VKV_UNSUPPORTED("cube map arrays (only the first cube is stored)");
 	if (VKV_CHECK(ci->extent.width && ci->extent.height && ci->extent.width <= 4096 && ci->extent.height <= 4096,
 	              "bad image extent %ux%u", (unsigned)ci->extent.width, (unsigned)ci->extent.height))
 		return VK_ERROR_INITIALIZATION_FAILED;
@@ -811,11 +822,76 @@ VKAPI_ATTR void VKAPI_CALL vkGetImageSubresourceLayout(VkDevice device, VkImage 
 /* ------------------------------------------------------------------------ */
 /* Image views and samplers                                                 */
 /* ------------------------------------------------------------------------ */
+/* Component swizzles: GXM bakes the swizzle into the texture format. The
+ * letters of a GXM swizzle name the channels from the highest byte down, so
+ * each entry here is the source of r, g, b, a: 0-3 are the bytes from the
+ * lowest up, 4 is zero, 5 is one. */
+enum { SW_ZERO = 4, SW_ONE = 5 };
+static const uint8_t k_swizzle4[8][4] = {
+	{ 0, 1, 2, 3 },           /* ABGR */
+	{ 2, 1, 0, 3 },           /* ARGB */
+	{ 3, 2, 1, 0 },           /* RGBA */
+	{ 1, 2, 3, 0 },           /* BGRA */
+	{ 0, 1, 2, SW_ONE },      /* 1BGR */
+	{ 2, 1, 0, SW_ONE },      /* 1RGB */
+	{ 3, 2, 1, SW_ONE },      /* RGB1 */
+	{ 1, 2, 3, SW_ONE },      /* BGR1 */
+};
+static const uint8_t k_swizzle1[8][4] = {
+	{ 0, SW_ZERO, SW_ZERO, SW_ONE }, /* R, sampled the Vulkan way */
+	{ 0, SW_ZERO, SW_ZERO, SW_ZERO }, /* 000R */
+	{ 0, SW_ONE, SW_ONE, SW_ONE },   /* 111R */
+	{ 0, 0, 0, 0 },                  /* RRRR */
+	{ 0, 0, 0, SW_ZERO },            /* 0RRR */
+	{ 0, 0, 0, SW_ONE },             /* 1RRR */
+	{ SW_ZERO, SW_ZERO, SW_ZERO, 0 }, /* R000 */
+	{ SW_ONE, SW_ONE, SW_ONE, 0 },   /* R111 */
+};
+
+static SceGxmTextureFormat vkv_view_swizzle(const VkvFormatInfo *fi, const VkComponentMapping *cm, bool *ok) {
+	*ok = true;
+	const VkComponentSwizzle want[4] = { cm->r, cm->g, cm->b, cm->a };
+	bool identity = true;
+	for (int k = 0; k < 4; k++)
+		if (want[k] != VK_COMPONENT_SWIZZLE_IDENTITY && want[k] != (VkComponentSwizzle)(VK_COMPONENT_SWIZZLE_R + k))
+			identity = false;
+	if (identity || !vkv_format_sampleable(fi)) return fi->tex;
+	uint32_t base = (uint32_t)fi->tex & 0x9F000000u, swz = ((uint32_t)fi->tex >> 12) & 7;
+	const uint8_t (*table)[4];
+	switch (base) {
+	case SCE_GXM_TEXTURE_BASE_FORMAT_U8U8U8U8: case SCE_GXM_TEXTURE_BASE_FORMAT_U4U4U4U4:
+	case SCE_GXM_TEXTURE_BASE_FORMAT_U1U5U5U5: case SCE_GXM_TEXTURE_BASE_FORMAT_F16F16F16F16:
+	case SCE_GXM_TEXTURE_BASE_FORMAT_UBC1: case SCE_GXM_TEXTURE_BASE_FORMAT_UBC2: case SCE_GXM_TEXTURE_BASE_FORMAT_UBC3:
+		table = k_swizzle4;
+		break;
+	case SCE_GXM_TEXTURE_BASE_FORMAT_U8: case SCE_GXM_TEXTURE_BASE_FORMAT_S8:
+		table = k_swizzle1;
+		break;
+	default:
+		*ok = false;
+		return fi->tex;
+	}
+	/* where each Vulkan channel lives in memory, then where each output must come from */
+	const uint8_t *id = table[swz];
+	uint8_t need[4];
+	for (int k = 0; k < 4; k++) {
+		VkComponentSwizzle c = want[k] == VK_COMPONENT_SWIZZLE_IDENTITY ? (VkComponentSwizzle)(VK_COMPONENT_SWIZZLE_R + k)
+		                                                               : want[k];
+		if (c == VK_COMPONENT_SWIZZLE_ZERO) need[k] = SW_ZERO;
+		else if (c == VK_COMPONENT_SWIZZLE_ONE) need[k] = SW_ONE;
+		else need[k] = id[c - VK_COMPONENT_SWIZZLE_R];
+	}
+	for (uint32_t s = 0; s < 8; s++)
+		if (!memcmp(table[s], need, 4)) return (SceGxmTextureFormat)(base | (s << 12));
+	*ok = false;
+	return fi->tex;
+}
+
 bool vkv_view_build_texture(VkvImageView *v) {
 	const VkvFormatInfo *fi = vkv_format(v->format);
 	VkvImage *img = v->image;
 	v->texValid = false;
-	if (!fi || !fi->tex || !img->ptr) return false;
+	if (!vkv_format_sampleable(fi) || !img->ptr) return false;
 	if (fi->bpp != img->fi->bpp || fi->block != img->fi->block) {
 		VKV_WARN("image view format %d has a different texel size than its image", (int)v->format);
 		return false;
@@ -830,9 +906,10 @@ bool vkv_view_build_texture(VkvImageView *v) {
 		VKV_UNSUPPORTED("cube views that skip the first mip levels of a mipmapped cube");
 		return false;
 	}
-	if (v->cube) r = sceGxmTextureInitCube(&v->tex, data, fi->tex, w, h, img->levels > 1 ? v->levelCount : 0);
-	else if (img->swizzled) r = sceGxmTextureInitSwizzled(&v->tex, data, fi->tex, w, h, v->levelCount);
-	else r = sceGxmTextureInitLinear(&v->tex, data, fi->tex, w, h, v->levelCount);
+	SceGxmTextureFormat tf = v->texFormat ? v->texFormat : fi->tex;
+	if (v->cube) r = sceGxmTextureInitCube(&v->tex, data, tf, w, h, img->levels > 1 ? v->levelCount : 0);
+	else if (img->swizzled) r = sceGxmTextureInitSwizzled(&v->tex, data, tf, w, h, v->levelCount);
+	else r = sceGxmTextureInitLinear(&v->tex, data, tf, w, h, v->levelCount);
 	if (r < 0) {
 		VKV_ERROR("texture init (%ux%u fmt %d, %u levels%s) failed: 0x%08X", (unsigned)w, (unsigned)h, (int)v->format,
 		          (unsigned)v->levelCount, v->cube ? ", cube" : "", (unsigned)r);
@@ -863,16 +940,19 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateImageView(VkDevice device, const VkImageV
 	v->levelCount = VKV_MAX(VKV_MIN(count, img->levels - v->baseLevel), 1u);
 	v->baseLayer = VKV_MIN(ci->subresourceRange.baseArrayLayer, img->layers - 1);
 	v->cube = img->cube && (ci->viewType == VK_IMAGE_VIEW_TYPE_CUBE || ci->viewType == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY);
+	uint32_t layerCount = ci->subresourceRange.layerCount == VK_REMAINING_ARRAY_LAYERS
+	                          ? img->layers - v->baseLayer : ci->subresourceRange.layerCount;
 	if (ci->viewType == VK_IMAGE_VIEW_TYPE_CUBE && !img->cube)
 		VKV_UNSUPPORTED("cube views of images created without CUBE_COMPATIBLE and 6 layers");
-	else if (ci->viewType != VK_IMAGE_VIEW_TYPE_2D && ci->viewType != VK_IMAGE_VIEW_TYPE_CUBE)
-		VKV_UNSUPPORTED("array image views (treated as 2D)");
-	const VkComponentMapping *cm = &ci->components;
-	if ((cm->r != VK_COMPONENT_SWIZZLE_IDENTITY && cm->r != VK_COMPONENT_SWIZZLE_R) ||
-	    (cm->g != VK_COMPONENT_SWIZZLE_IDENTITY && cm->g != VK_COMPONENT_SWIZZLE_G) ||
-	    (cm->b != VK_COMPONENT_SWIZZLE_IDENTITY && cm->b != VK_COMPONENT_SWIZZLE_B) ||
-	    (cm->a != VK_COMPONENT_SWIZZLE_IDENTITY && cm->a != VK_COMPONENT_SWIZZLE_A))
-		VKV_UNSUPPORTED("image view component swizzles (ignored)");
+	else if (ci->viewType == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY && layerCount > 6)
+		VKV_UNSUPPORTED("cube array views (the first cube is used)");
+	else if ((ci->viewType == VK_IMAGE_VIEW_TYPE_2D_ARRAY || ci->viewType == VK_IMAGE_VIEW_TYPE_1D_ARRAY) && layerCount > 1)
+		VKV_UNSUPPORTED("array views with several layers (GXM has no array textures, the first layer is used)");
+	else if (ci->viewType == VK_IMAGE_VIEW_TYPE_1D || ci->viewType == VK_IMAGE_VIEW_TYPE_3D)
+		VKV_UNSUPPORTED("1D and 3D views (treated as 2D)");
+	bool swOk;
+	v->texFormat = vkv_view_swizzle(vkv_format(ci->format) ? vkv_format(ci->format) : img->fi, &ci->components, &swOk);
+	if (!swOk) VKV_UNSUPPORTED("this component swizzle (GXM has a fixed set per format, ignored)");
 	if (!img->fi->isDepth) vkv_view_build_texture(v);
 	*pView = VKV_H(VkImageView, v);
 	return VK_SUCCESS;
@@ -916,6 +996,10 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateSampler(VkDevice device, const VkSamplerC
 	if (ci->anisotropyEnable) VKV_UNSUPPORTED("anisotropic filtering");
 	if (ci->compareEnable) VKV_UNSUPPORTED("depth compare samplers");
 	if (ci->minLod > 0.0f) VKV_UNSUPPORTED("sampler minLod");
+	/* GXM stores the bias in eighths around 31 (-3.875 to +4) */
+	float bias = ci->mipLodBias * 8.0f + 31.0f;
+	s->lodBias = bias <= 0.0f ? 0 : bias >= 63.0f ? 63 : (uint32_t)(bias + 0.5f);
+	if (ci->mipLodBias < -3.875f || ci->mipLodBias > 4.0f) VKV_UNSUPPORTED("LOD bias beyond -3.875..4 (clamped)");
 	*pSampler = VKV_H(VkSampler, s);
 	return VK_SUCCESS;
 }
@@ -934,6 +1018,7 @@ void vkv_texture_apply_sampler(SceGxmTexture *tex, const VkvSampler *s, uint32_t
 	sceGxmTextureSetMagFilter(tex, s->magFilter);
 	sceGxmTextureSetUAddrMode(tex, s->addrU);
 	sceGxmTextureSetVAddrMode(tex, s->addrV);
+	if (s->lodBias != 31) sceGxmTextureSetLodBias(tex, s->lodBias);
 	if (levels > 1) {
 		sceGxmTextureSetMipFilter(tex, s->mipFilter);
 		if (s->maxLevels < levels) sceGxmTextureSetMipmapCount(tex, s->maxLevels);

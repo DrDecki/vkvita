@@ -254,9 +254,9 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFormatProperties(VkPhysicalDevice 
 	const VkvFormatInfo *fi = vkv_format(format);
 	if (!fi) return;
 	VkFormatFeatureFlags f = 0;
-	if (fi->tex) f |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
+	if (vkv_format_sampleable(fi)) f |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
 	                  VK_FORMAT_FEATURE_TRANSFER_DST_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
-	if (fi->tex && !fi->block) f |= VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
+	if (vkv_format_sampleable(fi) && !fi->block) f |= VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
 	if (fi->renderable) f |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT;
 	if (fi->isDepth) f |= VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
 	p->linearTilingFeatures  = f;
@@ -271,7 +271,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceImageFormatProperties(VkPhysic
 	const VkvFormatInfo *fi = vkv_format(format);
 	memset(p, 0, sizeof(*p));
 	if (!fi || type != VK_IMAGE_TYPE_2D) return VK_ERROR_FORMAT_NOT_SUPPORTED;
-	if ((usage & VK_IMAGE_USAGE_SAMPLED_BIT) && !fi->tex) return VK_ERROR_FORMAT_NOT_SUPPORTED;
+	if ((usage & VK_IMAGE_USAGE_SAMPLED_BIT) && !vkv_format_sampleable(fi)) return VK_ERROR_FORMAT_NOT_SUPPORTED;
 	if ((usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) && !fi->renderable) return VK_ERROR_FORMAT_NOT_SUPPORTED;
 	if ((usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) && !fi->isDepth) return VK_ERROR_FORMAT_NOT_SUPPORTED;
 	p->maxExtent = (VkExtent3D){ 4096, 4096, 1 };

@@ -74,9 +74,10 @@ Nothing from the sections below has to be done by hand:
   range goes; `.length()` returns that size, not the real one. Every
   element of the array takes space in the default uniform buffer of each
   draw, so keep the size close to what the game uses.
-- std430 arrays of scalars and vec2s (4 or 8 bytes apart) at the end of a
-  storage buffer or push constant block work; elsewhere in the block they
-  cannot be expressed and the translation fails.
+- std430 blocks (storage buffers, push constants) with arrays of scalars or
+  vec2s packed 4 or 8 bytes apart work anywhere in the block: the block gets
+  a cbuffer layout for the generated Cg, and VkVita reads the buffer with
+  the real std430 offsets. Tightly packed `mat2` members are not supported.
 
 Not supported (the translation fails with a message naming the resource):
 storage buffers the shader writes, storage images, compute and geometry

@@ -194,6 +194,10 @@ typedef struct VkvFormatInfo {
 } VkvFormatInfo;
 
 const VkvFormatInfo *vkv_format(VkFormat f);
+/* fi->tex is 0 both for "not sampleable" and for GXM's U8_R, which R8 uses */
+static inline bool vkv_format_sampleable(const VkvFormatInfo *fi) {
+	return fi && (fi->tex || fi->vk == VK_FORMAT_R8_UNORM);
+}
 
 /* ------------------------------------------------------------------------ */
 /* Instance / physical device / device                                      */
@@ -356,6 +360,7 @@ typedef struct VkImageView_T {
 	VkFormat       format;
 	uint32_t       baseLevel, levelCount, baseLayer;
 	bool           cube;
+	SceGxmTextureFormat texFormat; /* the image's format with the view's component swizzle */
 	SceGxmTexture  tex;
 	bool           texValid;
 } VkvImageView;
@@ -366,6 +371,7 @@ typedef struct VkSampler_T {
 	SceGxmTextureMipFilter mipFilter;
 	SceGxmTextureAddrMode  addrU, addrV;
 	uint32_t               maxLevels;
+	uint32_t               lodBias;     /* GXM encoding: 31 + 8 * bias */
 } VkvSampler;
 
 void vkv_texture_apply_sampler(SceGxmTexture *tex, const VkvSampler *s, uint32_t levels);

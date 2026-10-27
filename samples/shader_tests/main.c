@@ -14,8 +14,12 @@
  *               only partly filled, a tightly packed float array, an array
  *               of structs after a header, and a float array in push
  *               constants (std430, 4 bytes apart)
+ *   fourth row  images: a layer of an array image, a layer that a render
+ *               pass cleared, an R8 texture swizzled to (1, 1, 1, R) and an
+ *               RGBA texture swizzled to BGRA
+ *   fifth row   a sampler with a LOD bias of +1
  *
- * Expected picture: twelve green tiles.
+ * Expected picture: seventeen green tiles.
  *
  * Regenerate the shader headers after editing shaders/:
  *   glslangValidator -V --vn k_tile_vert_spv shaders/tile.vert -o tile_vert_spv.h
@@ -74,6 +78,56 @@ static void make_texture(Sample *s, const uint8_t rgba[4], Texture *t) {
 	vci.format = ii.format;
 	vci.subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
 	VK_CHECK(vkCreateImageView(s->device, &vci, NULL, &t->view));
+}
+
+/* A linear image in mapped memory, each level and layer filled with one color
+ * (or one byte for 1 byte formats). */
+static void make_image(Sample *s, VkFormat format, uint32_t size, uint32_t levels, uint32_t layers, uint32_t bpp,
+                       const uint8_t (*colors)[4], VkImage *image, VkDeviceMemory *memory) {
+	VkImageCreateInfo ii = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+	ii.imageType = VK_IMAGE_TYPE_2D;
+	ii.format = format;
+	ii.extent = (VkExtent3D){ size, size, 1 };
+	ii.mipLevels = levels;
+	ii.arrayLayers = layers;
+	ii.samples = VK_SAMPLE_COUNT_1_BIT;
+	ii.tiling = VK_IMAGE_TILING_LINEAR;
+	ii.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+	ii.initialLayout = VK_IMAGE_LAYOUT_PREINITIALIZED;
+	VK_CHECK(vkCreateImage(s->device, &ii, NULL, image));
+	VkMemoryRequirements req;
+	vkGetImageMemoryRequirements(s->device, *image, &req);
+	VkMemoryAllocateInfo ai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+	ai.allocationSize = req.size;
+	ai.memoryTypeIndex = sample_memory_type(s, req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+	VK_CHECK(vkAllocateMemory(s->device, &ai, NULL, memory));
+	VK_CHECK(vkBindImageMemory(s->device, *image, *memory, 0));
+	uint8_t *p;
+	VK_CHECK(vkMapMemory(s->device, *memory, 0, VK_WHOLE_SIZE, 0, (void **)&p));
+	for (uint32_t layer = 0; layer < layers; layer++)
+		for (uint32_t level = 0; level < levels; level++) {
+			VkImageSubresource sub = { VK_IMAGE_ASPECT_COLOR_BIT, level, layer };
+			VkSubresourceLayout l;
+			vkGetImageSubresourceLayout(s->device, *image, &sub, &l);
+			uint32_t w = size >> level;
+			const uint8_t *c = colors[layer * levels + level];
+			for (uint32_t y = 0; y < w; y++)
+				for (uint32_t x = 0; x < w; x++) memcpy(p + l.offset + y * l.rowPitch + x * bpp, c, bpp);
+		}
+	vkUnmapMemory(s->device, *memory);
+}
+
+static VkImageView make_view(Sample *s, VkImage image, VkFormat format, uint32_t levels, uint32_t layer,
+                             VkComponentMapping components) {
+	VkImageViewCreateInfo vci = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+	vci.image = image;
+	vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	vci.format = format;
+	vci.components = components;
+	vci.subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, levels, layer, 1 };
+	VkImageView v;
+	VK_CHECK(vkCreateImageView(s->device, &vci, NULL, &v));
+	return v;
 }
 
 static void destroy_texture(Sample *s, Texture *t) {
@@ -157,9 +211,109 @@ int main(void) {
 	sci.addressModeU = sci.addressModeV = sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
 	VkSampler sampler;
 	VK_CHECK(vkCreateSampler(s.device, &sci, NULL, &sampler));
+	sci.addressModeU = sci.addressModeV = sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+	sci.maxLod = 8.0f;
+	sci.mipLodBias = 1.0f;
+	VkSampler biasSampler;
+	VK_CHECK(vkCreateSampler(s.device, &sci, NULL, &biasSampler));
+
+	/* --- images for the fourth and fifth row ------------------------------------ */
+	static const VkComponentMapping ident = { VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
+	                                          VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY };
+	static const uint8_t layerColors[3][4] = { { 255, 0, 0, 255 }, { 0, 255, 0, 255 }, { 0, 0, 255, 255 } };
+	VkImage arrayImg, alphaImg, redImg, mipImg;
+	VkDeviceMemory arrayMem, alphaMem, redMem, mipMem;
+	make_image(&s, VK_FORMAT_R8G8B8A8_UNORM, TEX_SIZE, 1, 3, 4, layerColors, &arrayImg, &arrayMem);
+	VkImageView layerView = make_view(&s, arrayImg, VK_FORMAT_R8G8B8A8_UNORM, 1, 2, ident);
+	static const uint8_t half[1][4] = { { 128, 0, 0, 0 } };
+	make_image(&s, VK_FORMAT_R8_UNORM, TEX_SIZE, 1, 1, 1, half, &alphaImg, &alphaMem);
+	VkImageView alphaView = make_view(&s, alphaImg, VK_FORMAT_R8_UNORM, 1, 0,
+	                                  (VkComponentMapping){ VK_COMPONENT_SWIZZLE_ONE, VK_COMPONENT_SWIZZLE_ONE,
+	                                                        VK_COMPONENT_SWIZZLE_ONE, VK_COMPONENT_SWIZZLE_R });
+	static const uint8_t red[1][4] = { { 255, 0, 0, 255 } };
+	make_image(&s, VK_FORMAT_R8G8B8A8_UNORM, TEX_SIZE, 1, 1, 4, red, &redImg, &redMem);
+	VkImageView swappedView = make_view(&s, redImg, VK_FORMAT_R8G8B8A8_UNORM, 1, 0,
+	                                    (VkComponentMapping){ VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_G,
+	                                                          VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_A });
+	static const uint8_t mipColors[4][4] = { { 255, 0, 0, 255 }, { 0, 255, 0, 255 }, { 0, 0, 255, 255 },
+	                                         { 255, 255, 255, 255 } };
+	make_image(&s, VK_FORMAT_R8G8B8A8_UNORM, TEX_SIZE, 4, 1, 4, mipColors, &mipImg, &mipMem);
+	VkImageView mipView = make_view(&s, mipImg, VK_FORMAT_R8G8B8A8_UNORM, 4, 0, ident);
+
+	/* layer 1 of a two layer render target, cleared to yellow by a render pass */
+	VkImageCreateInfo rii = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+	rii.imageType = VK_IMAGE_TYPE_2D;
+	rii.format = VK_FORMAT_R8G8B8A8_UNORM;
+	rii.extent = (VkExtent3D){ 64, 64, 1 };
+	rii.mipLevels = 1;
+	rii.arrayLayers = 2;
+	rii.samples = VK_SAMPLE_COUNT_1_BIT;
+	rii.tiling = VK_IMAGE_TILING_OPTIMAL;
+	rii.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+	VkImage targetImg;
+	VK_CHECK(vkCreateImage(s.device, &rii, NULL, &targetImg));
+	VkMemoryRequirements treq;
+	vkGetImageMemoryRequirements(s.device, targetImg, &treq);
+	VkMemoryAllocateInfo tai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+	tai.allocationSize = treq.size;
+	tai.memoryTypeIndex = sample_memory_type(&s, treq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	VkDeviceMemory targetMem;
+	VK_CHECK(vkAllocateMemory(s.device, &tai, NULL, &targetMem));
+	VK_CHECK(vkBindImageMemory(s.device, targetImg, targetMem, 0));
+	VkImageView targetLayer0 = make_view(&s, targetImg, VK_FORMAT_R8G8B8A8_UNORM, 1, 0, ident);
+	VkImageView targetLayer1 = make_view(&s, targetImg, VK_FORMAT_R8G8B8A8_UNORM, 1, 1, ident);
+	VkAttachmentDescription tatt = { 0 };
+	tatt.format = VK_FORMAT_R8G8B8A8_UNORM;
+	tatt.samples = VK_SAMPLE_COUNT_1_BIT;
+	tatt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	tatt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	tatt.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	tatt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	tatt.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	tatt.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	VkAttachmentReference tref = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+	VkSubpassDescription tsub = { 0 };
+	tsub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+	tsub.colorAttachmentCount = 1;
+	tsub.pColorAttachments = &tref;
+	VkRenderPassCreateInfo trp = { VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
+	trp.attachmentCount = 1;
+	trp.pAttachments = &tatt;
+	trp.subpassCount = 1;
+	trp.pSubpasses = &tsub;
+	VkRenderPass targetRp;
+	VK_CHECK(vkCreateRenderPass(s.device, &trp, NULL, &targetRp));
+	VkFramebuffer targetFb[2];
+	VkImageView targetViews[2] = { targetLayer0, targetLayer1 };
+	for (int i = 0; i < 2; i++) {
+		VkFramebufferCreateInfo tfci = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
+		tfci.renderPass = targetRp;
+		tfci.attachmentCount = 1;
+		tfci.pAttachments = &targetViews[i];
+		tfci.width = tfci.height = 64;
+		tfci.layers = 1;
+		VK_CHECK(vkCreateFramebuffer(s.device, &tfci, NULL, &targetFb[i]));
+	}
+	{
+		/* layer 0 red, layer 1 yellow: the tile reads layer 1 */
+		VkCommandBuffer once = sample_begin_once(&s);
+		const VkClearValue clears[2] = { { .color = { { 1, 0, 0, 1 } } }, { .color = { { 1, 1, 0, 1 } } } };
+		for (int i = 0; i < 2; i++) {
+			VkRenderPassBeginInfo rbi = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+			rbi.renderPass = targetRp;
+			rbi.framebuffer = targetFb[i];
+			rbi.renderArea.extent = (VkExtent2D){ 64, 64 };
+			rbi.clearValueCount = 1;
+			rbi.pClearValues = &clears[i];
+			vkCmdBeginRenderPass(once, &rbi, VK_SUBPASS_CONTENTS_INLINE);
+			vkCmdEndRenderPass(once);
+		}
+		sample_end_once(&s, once);
+	}
 
 	/* --- descriptors ---------------------------------------------------------- */
-	VkDescriptorSetLayoutBinding lb[7] = {
+	VkDescriptorSetLayoutBinding lb[12] = {
 		{ 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
 		{ 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
 		{ 2, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 2, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
@@ -167,14 +321,19 @@ int main(void) {
 		{ 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
 		{ 5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
 		{ 6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
+		{ 7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
+		{ 8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
+		{ 9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
+		{ 10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
+		{ 11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
 	};
 	VkDescriptorSetLayoutCreateInfo dlci = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-	dlci.bindingCount = 7;
+	dlci.bindingCount = 12;
 	dlci.pBindings = lb;
 	VkDescriptorSetLayout setLayout;
 	VK_CHECK(vkCreateDescriptorSetLayout(s.device, &dlci, NULL, &setLayout));
 	VkDescriptorPoolSize ps[5] = {
-		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 }, { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3 },
+		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 }, { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8 },
 		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 2 }, { VK_DESCRIPTOR_TYPE_SAMPLER, 1 },
 		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3 },
 	};
@@ -199,9 +358,16 @@ int main(void) {
 		combined[i] = (VkDescriptorImageInfo){ sampler, tex[i].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
 	for (int i = 0; i < 2; i++)
 		images[i] = (VkDescriptorImageInfo){ VK_NULL_HANDLE, tex[3 + i].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-	VkWriteDescriptorSet wr[7];
+	VkDescriptorImageInfo extra[5] = {
+		{ sampler, layerView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+		{ sampler, targetLayer1, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+		{ sampler, alphaView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+		{ sampler, swappedView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+		{ biasSampler, mipView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+	};
+	VkWriteDescriptorSet wr[12];
 	memset(wr, 0, sizeof(wr));
-	for (int i = 0; i < 7; i++) {
+	for (int i = 0; i < 12; i++) {
 		wr[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		wr[i].dstSet = set;
 		wr[i].dstBinding = (uint32_t)i;
@@ -213,10 +379,11 @@ int main(void) {
 	wr[2].pImageInfo = images;
 	wr[3].pImageInfo = &samp;
 	for (int i = 0; i < 3; i++) wr[4 + i].pBufferInfo = &sbi[i];
-	vkUpdateDescriptorSets(s.device, 7, wr, 0, NULL);
+	for (int i = 0; i < 5; i++) wr[7 + i].pImageInfo = &extra[i];
+	vkUpdateDescriptorSets(s.device, 12, wr, 0, NULL);
 
 	/* --- pipeline: the tile comes from push constants, no vertex buffer ----- */
-	VkPushConstantRange range = { VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 24 };
+	VkPushConstantRange range = { VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 28 };
 	VkPipelineLayoutCreateInfo plci = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
 	plci.setLayoutCount = 1;
 	plci.pSetLayouts = &setLayout;
@@ -277,14 +444,17 @@ int main(void) {
 		vkCmdSetScissor(cb, 0, 1, &sc);
 		vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
 		vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &set, 0, NULL);
-		for (int32_t tile = 0; tile < 12; tile++) {
-			struct { int32_t tile, which; float weights[4]; } push = { tile, 1, { 1.0f, 0.5f, 0.25f, 0.125f } };
+		/* about 2.3 texels per pixel on an 8x8 texture over the tile height: mip level 1.2 */
+		const float lodScale = 2.3f * 0.33f * 0.5f * (float)s.extent.height / TEX_SIZE;
+		for (int32_t tile = 0; tile < 17; tile++) {
+			struct { int32_t tile, which; float weights[4]; float lodScale; } push = {
+				tile, 1, { 1.0f, 0.5f, 0.25f, 0.125f }, lodScale };
 			vkCmdPushConstants(cb, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push),
 			                   &push);
 			vkCmdDraw(cb, 6, 1, 0, 0);
 		}
 		sample_end_frame(&s);
-		if (++frameNo == 60) vkvLog(VKV_LOG_WARN, "shader_tests: running, twelve green tiles expected");
+		if (++frameNo == 60) vkvLog(VKV_LOG_WARN, "shader_tests: running, seventeen green tiles expected");
 	}
 
 	vkDeviceWaitIdle(s.device);
@@ -293,6 +463,17 @@ int main(void) {
 	vkDestroyDescriptorPool(s.device, dpool, NULL);
 	vkDestroyDescriptorSetLayout(s.device, setLayout, NULL);
 	vkDestroySampler(s.device, sampler, NULL);
+	vkDestroySampler(s.device, biasSampler, NULL);
+	VkImageView views[6] = { layerView, alphaView, swappedView, mipView, targetLayer0, targetLayer1 };
+	for (int i = 0; i < 6; i++) vkDestroyImageView(s.device, views[i], NULL);
+	for (int i = 0; i < 2; i++) vkDestroyFramebuffer(s.device, targetFb[i], NULL);
+	vkDestroyRenderPass(s.device, targetRp, NULL);
+	VkImage imgs[5] = { arrayImg, alphaImg, redImg, mipImg, targetImg };
+	VkDeviceMemory mems[5] = { arrayMem, alphaMem, redMem, mipMem, targetMem };
+	for (int i = 0; i < 5; i++) {
+		vkDestroyImage(s.device, imgs[i], NULL);
+		vkFreeMemory(s.device, mems[i], NULL);
+	}
 	for (int i = 0; i < 5; i++) destroy_texture(&s, &tex[i]);
 	vkDestroyBuffer(s.device, ubuf, NULL);
 	vkFreeMemory(s.device, umem, NULL);

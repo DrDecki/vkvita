@@ -128,7 +128,7 @@ Samples can be found in the `samples` folder.
 | `gpu_features` | Mipmaps (uploaded and blitted), a mipmapped cube map, a BC1 texture with a separate sampler, wide lines, indirect draws and occlusion queries |
 | `subpasses` | A render pass with three subpasses, one of them reading the first through an input attachment |
 | `msaa` | 4x and 2x MSAA with a resolve attachment, next to the same scene without multisampling |
-| `shader_tests` | Eight checks run on the GPU: structs in uniform blocks and sampler arrays, green when they pass |
+| `shader_tests` | Seventeen checks run on the GPU, green when they pass: structs in uniform blocks, sampler arrays, read-only storage buffers, std430 arrays, array layers, swizzles and LOD bias |
 | `standalone_template` | A starting point for your own project |
 
 ## Tools
