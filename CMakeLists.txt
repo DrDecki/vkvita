@@ -11,6 +11,11 @@ endif()
 
 project(VkVita VERSION 0.1.0 LANGUAGES C CXX)
 
+if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/Vulkan-Headers/include/vulkan/vulkan.h OR
+   NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/SPIRV-Cross/spirv_cross.cpp)
+  message(FATAL_ERROR "The submodules are missing. Run: git submodule update --init")
+endif()
+
 if(NOT DEFINED VITASDK)
   set(VITASDK "$ENV{VITASDK}")
 endif()
@@ -140,7 +145,7 @@ install(TARGETS vkvita EXPORT VkVitaTargets ARCHIVE DESTINATION ${CMAKE_INSTALL_
 install(DIRECTORY include/vkvita DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 if(VKV_INSTALL_VULKAN_HEADERS)
   install(DIRECTORY third_party/Vulkan-Headers/include/vulkan third_party/Vulkan-Headers/include/vk_video
-          DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+          DESTINATION ${CMAKE_INSTALL_INCLUDEDIR} FILES_MATCHING PATTERN "*.h")
 endif()
 
 include(CMakePackageConfigHelpers)

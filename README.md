@@ -23,6 +23,8 @@ If you run into a problem, open an issue on GitHub. Most problems can be narrowe
 Both the normal (hardfp) and the softfp VitaSDK work.
 
 ```sh
+git clone --recursive https://github.com/DrDecki/vkvita.git
+cd vkvita
 cmake -S . -B build
 cmake --build build -j
 cmake --install build
@@ -40,6 +42,17 @@ These CMake options are available:
 | `VKV_BUILD_SAMPLES=ON` | Builds the sample VPKs |
 | `VKV_INSTALL_VULKAN_HEADERS=ON` | Installs the bundled Khronos Vulkan headers |
 | `VKV_DEFAULT_DEBUG_FLAGS=` | Default debug flags as a number |
+
+If you cloned without `--recursive`, run `git submodule update --init` once.
+
+### Third-party code
+
+Both are git submodules in `third_party/`:
+
+| Library | Version |
+|---|---|
+| [Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers) | upstream commit `73814d0` (`VK_HEADER_VERSION` 366) |
+| [SPIRV-Cross](https://github.com/DrDecki/SPIRV-Cross/tree/vkvita) | `sdk-1.3.239.0` with one commit on the `vkvita` branch that fixes the build where `uint32_t` is `unsigned long`, like on the Vita |
 
 Everything below can be changed at runtime without rebuilding, either in code (`vkvSetConfig`, `vkvSetDebugFlags`, `vkvSetCompatFlags`) or by creating `ux0:data/vkvita/config.txt` on the console:
 
