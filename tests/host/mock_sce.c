@@ -261,6 +261,13 @@ SceGxmProgram *shark_compile_shader_extended(const char *src, uint32_t *size, sh
 	const char *m = strstr(src, "main(");
 	while (m && m > src && (isalnum((unsigned char)m[-1]) || m[-1] == '_')) m = strstr(m + 1, "main(");
 	if (!m) { if (g_sharkLog) g_sharkLog("no main()", SHARK_LOG_ERROR, 1); return NULL; }
+	/* like the real compiler: no integer divides with a variable denominator.
+	 * Cg has no float %, so any % is an integer remainder. */
+	if (strstr(src, " % ")) {
+		if (g_sharkLog)
+			g_sharkLog("does not support integer divides with arbitrary denominators", SHARK_LOG_ERROR, 1);
+		return NULL;
+	}
 	SceGxmProgram *p = calloc(1, sizeof(*p));
 	memcpy(p->magic, "GXP", 4);
 	p->type = type == SHARK_VERTEX_SHADER ? SCE_GXM_VERTEX_PROGRAM : SCE_GXM_FRAGMENT_PROGRAM;

@@ -66,6 +66,10 @@ int vkv_spirv_lower_subpass(const uint32_t *words, size_t wordCount, uint32_t **
  * values as vkv_spirv_lower_subpass. */
 int vkv_spirv_lower_builtins(const uint32_t *words, size_t wordCount, uint32_t **outWords, size_t *outCount);
 
+/* Rewrites integer division and remainder as float math, which the GXM
+ * compiler accepts with any denominator. Same return values as above. */
+int vkv_spirv_lower_intdiv(const uint32_t *words, size_t wordCount, uint32_t **outWords, size_t *outCount);
+
 #ifdef __cplusplus
 }
 #endif

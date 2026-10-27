@@ -697,17 +697,25 @@ int vkv_spirv_translate(const uint32_t *words, size_t wordCount, VkvSpirvStage s
 	char *cg = NULL;
 	SpvExecutionModel want = stage == VKV_SPIRV_VERTEX ? SpvExecutionModelVertex : SpvExecutionModelFragment;
 
-	uint32_t *builtins = NULL, *lowered = NULL;
-	size_t builtinsCount = 0, loweredCount = 0;
+	uint32_t *builtins = NULL, *lowered = NULL, *intdiv = NULL;
+	size_t builtinsCount = 0, loweredCount = 0, intdivCount = 0;
 	int br = vkv_spirv_lower_builtins(words, wordCount, &builtins, &builtinsCount);
 	if (br > 0) {
 		words = builtins;
 		wordCount = builtinsCount;
 	}
-	int lr = br < 0 || stage != VKV_SPIRV_FRAGMENT ? 0 : vkv_spirv_lower_subpass(words, wordCount, &lowered, &loweredCount);
-	if (br < 0 || lr < 0) {
+	int dr = br < 0 ? 0 : vkv_spirv_lower_intdiv(words, wordCount, &intdiv, &intdivCount);
+	if (dr > 0) {
+		logf_(&c, VKV_SPIRV_LOG_INFO, "integer division is done in float");
+		words = intdiv;
+		wordCount = intdivCount;
+	}
+	int lr = br < 0 || dr < 0 || stage != VKV_SPIRV_FRAGMENT ? 0
+	         : vkv_spirv_lower_subpass(words, wordCount, &lowered, &loweredCount);
+	if (br < 0 || dr < 0 || lr < 0) {
 		logf_(&c, VKV_SPIRV_LOG_ERROR, "malformed SPIR-V module");
 		free(builtins);
+		free(intdiv);
 		free(t);
 		return -1;
 	}
@@ -717,7 +725,7 @@ int vkv_spirv_translate(const uint32_t *words, size_t wordCount, VkvSpirvStage s
 		wordCount = loweredCount;
 	}
 
-	if (spvc_context_create(&ctx) != SPVC_SUCCESS) { free(lowered); free(builtins); free(t); return -1; }
+	if (spvc_context_create(&ctx) != SPVC_SUCCESS) { free(lowered); free(intdiv); free(builtins); free(t); return -1; }
 	spvc_context_set_error_callback(ctx, spvc_error_cb, &c);
 	if (spvc_context_parse_spirv(ctx, (const SpvId *)words, wordCount, &ir) != SPVC_SUCCESS) goto done;
 	if (spvc_context_create_compiler(ctx, SPVC_BACKEND_HLSL, ir, SPVC_CAPTURE_MODE_TAKE_OWNERSHIP, &comp) != SPVC_SUCCESS)
@@ -772,6 +780,7 @@ done:
 	free(t);
 	if (ctx) spvc_context_destroy(ctx);
 	free(lowered);
+	free(intdiv);
 	free(builtins);
 	return out->cg ? 0 : -1;
 }

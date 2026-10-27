@@ -347,3 +347,167 @@ int vkv_spirv_lower_builtins(const uint32_t *w, size_t n, uint32_t **outWords, s
 	*outCount = o.n;
 	return 1;
 }
+
+/* ------------------------------------------------------------------------ */
+/* Integer division and remainder                                           */
+/* ------------------------------------------------------------------------ */
+/* The GXM compiler has no integer divide with a variable denominator, so
+ * a / b and a % b on integers are done in float:
+ *
+ *   q = trunc(fa / fb + sign(fa / fb) * 0.5 / abs(fb))
+ *
+ * The quotient of two integers moves in steps of 1 / |b|, so the half step
+ * absorbs rounding in the division without ever reaching the next integer.
+ * Exact while the values stay below 2^24, which shader integers do. */
+enum {
+	OP_TYPE_BOOL = 20, OP_CONVERT_F_TO_U = 109, OP_CONVERT_F_TO_S = 110, OP_CONVERT_S_TO_F = 111,
+	OP_CONVERT_U_TO_F = 112, OP_UDIV = 134, OP_SDIV = 135, OP_FDIV = 136, OP_UMOD = 137, OP_SREM = 138,
+	OP_SMOD = 139, OP_SELECT = 169, OP_FORD_LESS_THAN = 184,
+};
+enum { GLSL_TRUNC = 3, GLSL_FABS = 4, GLSL_FSIGN = 6 };
+
+#define MAX_TYPES 4096
+
+static bool is_div_op(uint32_t op) {
+	return op == OP_UDIV || op == OP_SDIV || op == OP_UMOD || op == OP_SREM || op == OP_SMOD;
+}
+
+int vkv_spirv_lower_intdiv(const uint32_t *w, size_t n, uint32_t **outWords, size_t *outCount) {
+	*outWords = NULL;
+	*outCount = 0;
+	if (n < 5 || w[0] != VKV_SPIRV_MAGIC) return -1;
+
+	/* --- pass 1 ------------------------------------------------------------- */
+	uint32_t bound = w[3];
+	if (bound > 1u << 22) return -1;
+	/* per id: 0 none, 1 int32, 2 uint32, 3 float32, 4 bool, 5 vector */
+	uint8_t *kind = calloc(bound, 1), *count = calloc(bound, 1);
+	uint32_t *elem = calloc(bound, sizeof(uint32_t));
+	if (!kind || !count || !elem) { free(kind); free(count); free(elem); return -1; }
+	uint32_t floatId = 0, boolId = 0, glsl = 0, fvec[5] = { 0 }, bvec[5] = { 0 };
+	bool used[5] = { false };
+	bool any = false;
+	for (size_t i = 5; i < n;) {
+		uint32_t len = w[i] >> 16, op = w[i] & 0xFFFF;
+		if (!len || i + len > n) { free(kind); free(count); free(elem); return -1; }
+		const uint32_t *a = w + i + 1;
+		if (op == OP_TYPE_INT && a[0] < bound && a[1] == 32) { kind[a[0]] = a[2] ? 1 : 2; count[a[0]] = 1; }
+		else if (op == OP_TYPE_FLOAT && a[0] < bound && a[1] == 32) { kind[a[0]] = 3; count[a[0]] = 1; if (!floatId) floatId = a[0]; }
+		else if (op == OP_TYPE_BOOL && a[0] < bound) { kind[a[0]] = 4; count[a[0]] = 1; if (!boolId) boolId = a[0]; }
+		else if (op == OP_TYPE_VECTOR && a[0] < bound && a[1] < bound && a[2] <= 4) {
+			kind[a[0]] = 5; count[a[0]] = (uint8_t)a[2]; elem[a[0]] = a[1];
+		} else if (op == OP_EXT_INST_IMPORT && !strcmp((const char *)(a + 1), "GLSL.std.450")) glsl = a[0];
+		else if (is_div_op(op) && a[0] < bound) {
+			uint32_t t = a[0], base = kind[t] == 5 ? elem[t] : t;
+			if (base < bound && (kind[base] == 1 || kind[base] == 2)) { any = true; used[count[t]] = true; }
+		}
+		i += len;
+	}
+	if (!any) { free(kind); free(count); free(elem); return 0; }
+	/* existing float and bool vectors */
+	for (uint32_t id = 0; id < bound; id++) {
+		if (kind[id] != 5) continue;
+		if (elem[id] == floatId && floatId && !fvec[count[id]]) fvec[count[id]] = id;
+		if (elem[id] == boolId && boolId && !bvec[count[id]]) bvec[count[id]] = id;
+	}
+
+	/* --- new ids -------------------------------------------------------------- */
+	bool newFloat = !floatId, newBool = !boolId, newGlsl = !glsl;
+	if (newFloat) floatId = bound++;
+	if (newBool) boolId = bound++;
+	if (newGlsl) glsl = bound++;
+	fvec[1] = floatId;
+	bvec[1] = boolId;
+	bool newF[5] = { false }, newB[5] = { false };
+	uint32_t half[5] = { 0 }, zero[5] = { 0 };
+	for (int c = 1; c <= 4; c++) {
+		if (!used[c]) continue;
+		if (!fvec[c]) { fvec[c] = bound++; newF[c] = true; }
+		if (!bvec[c]) { bvec[c] = bound++; newB[c] = true; }
+	}
+	for (int c = 1; c <= 4; c++) {
+		if (!used[c] && c != 1) continue;
+		half[c] = bound++;
+		zero[c] = bound++;
+	}
+
+	/* --- pass 2 ------------------------------------------------------------- */
+	Out o = { 0 };
+	for (int k = 0; k < 5; k++) put(&o, w[k]);
+	bool globalsDone = false;
+	for (size_t i = 5; i < n;) {
+		uint32_t len = w[i] >> 16, op = w[i] & 0xFFFF;
+		const uint32_t *a = w + i + 1;
+		i += len;
+
+		if (op == OP_MEMORY_MODEL && newGlsl) {
+			const uint32_t id[] = { glsl };
+			inst_str(&o, OP_EXT_INST_IMPORT, id, 1, "GLSL.std.450");
+		}
+		if (op == OP_FUNCTION && !globalsDone) {
+			globalsDone = true;
+			if (newFloat) INST(&o, OP_TYPE_FLOAT, floatId, 32);
+			if (newBool) INST(&o, OP_TYPE_BOOL, boolId);
+			for (int c = 2; c <= 4; c++) {
+				if (newF[c]) INST(&o, OP_TYPE_VECTOR, fvec[c], floatId, (uint32_t)c);
+				if (newB[c]) INST(&o, OP_TYPE_VECTOR, bvec[c], boolId, (uint32_t)c);
+			}
+			INST(&o, OP_CONSTANT, floatId, half[1], 0x3F000000u);
+			INST(&o, OP_CONSTANT, floatId, zero[1], 0);
+			for (int c = 2; c <= 4; c++) {
+				if (!half[c]) continue;
+				uint32_t h[6] = { fvec[c], half[c], half[1], half[1], half[1], half[1] };
+				uint32_t z[6] = { fvec[c], zero[c], zero[1], zero[1], zero[1], zero[1] };
+				inst(&o, OP_CONSTANT_COMPOSITE, h, 2 + (uint32_t)c);
+				inst(&o, OP_CONSTANT_COMPOSITE, z, 2 + (uint32_t)c);
+			}
+		}
+		if (is_div_op(op) && a[0] < bound) {
+			uint32_t rt = a[0], base = kind[rt] == 5 ? elem[rt] : rt;
+			if (base < bound && (kind[base] == 1 || kind[base] == 2)) {
+				int c = count[rt] ? count[rt] : 1;
+				bool sgn = op == OP_SDIV || op == OP_SREM || op == OP_SMOD;
+				uint32_t ft = fvec[c], bt = bvec[c];
+				uint32_t fa = bound++, fb = bound++, fq = bound++, s = bound++, ab = bound++, h = bound++, sh = bound++;
+				uint32_t fq2 = bound++, tq = bound++;
+				uint32_t toF = sgn ? OP_CONVERT_S_TO_F : OP_CONVERT_U_TO_F, toI = sgn ? OP_CONVERT_F_TO_S : OP_CONVERT_F_TO_U;
+				INST(&o, toF, ft, fa, a[2]);
+				INST(&o, toF, ft, fb, a[3]);
+				INST(&o, OP_FDIV, ft, fq, fa, fb);
+				INST(&o, OP_EXT_INST, ft, s, glsl, GLSL_FSIGN, fq);
+				INST(&o, OP_EXT_INST, ft, ab, glsl, GLSL_FABS, fb);
+				INST(&o, OP_FDIV, ft, h, half[c], ab);
+				INST(&o, OP_FMUL, ft, sh, s, h);
+				INST(&o, OP_FADD, ft, fq2, fq, sh);
+				INST(&o, OP_EXT_INST, ft, tq, glsl, GLSL_TRUNC, fq2);
+				if (op == OP_SDIV || op == OP_UDIV) {
+					INST(&o, toI, rt, a[1], tq);
+					continue;
+				}
+				uint32_t m = bound++, r = bound++;
+				INST(&o, OP_FMUL, ft, m, fb, tq);
+				INST(&o, OP_FSUB, ft, r, fa, m);
+				if (op == OP_SMOD) {
+					/* the result takes the sign of the divisor */
+					uint32_t p = bound++, lt = bound++, add = bound++, r2 = bound++;
+					INST(&o, OP_FMUL, ft, p, r, fb);
+					INST(&o, OP_FORD_LESS_THAN, bt, lt, p, zero[c]);
+					INST(&o, OP_SELECT, ft, add, lt, fb, zero[c]);
+					INST(&o, OP_FADD, ft, r2, r, add);
+					r = r2;
+				}
+				INST(&o, toI, rt, a[1], r);
+				continue;
+			}
+		}
+		for (uint32_t k = 0; k < len; k++) put(&o, w[i - len + k]);
+	}
+	free(kind);
+	free(count);
+	free(elem);
+	if (o.oom || !globalsDone) { free(o.w); return -1; }
+	o.w[3] = bound;
+	*outWords = o.w;
+	*outCount = o.n;
+	return 1;
+}
