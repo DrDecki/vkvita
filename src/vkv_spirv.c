@@ -909,6 +909,8 @@ static char *rewrite(Tr *t, const char *hlsl) {
 		else if (!strcmp(lines[i], "struct SPIRV_Cross_Output")) collect_struct(t, lines, count, &i, t->out, &t->outCount);
 		else if (!strcmp(lines[i], "static float gl_PointSize;")) t->pointSize = t->stage == VKV_SPIRV_VERTEX;
 	}
+	for (uint32_t k = 0; k < t->outCount && t->pointSize; k++)
+		if (!strcmp(t->out[k].name, "gl_PointSize")) t->pointSize = false;
 	if (t->pointSize && t->outCount < MAX_IO) {
 		Io *io = &t->out[t->outCount++];
 		memset(io, 0, sizeof(*io));
