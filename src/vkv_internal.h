@@ -80,6 +80,7 @@ typedef struct VkvGlobals {
 	VkvConfig          cfg;
 	char               logPath[256];
 	char               shaderDir[256];
+	char               shaderPackDir[256];
 	char               sharkPath[256];
 	PFN_vkvLogCallback logCb;
 	void              *logUser;

@@ -91,7 +91,11 @@ A shader module can be one of three things:
    Cg dialect of the Sony compiler. After that it goes the same way as Cg.
 
 Compiled programs can be cached as `.gxp` files by hash, so later starts
-skip the compiler. `SHADERS.md` has the details of the translation.
+skip the compiler. An app can also ship those files and point
+`shaderPackDir` at them, then the compiler is not needed at all. The hash of
+a SPIR-V module includes `VKV_SPIRV_HASH_SEED`, which has to be bumped when
+the translator output changes. `SHADERS.md` has the details of the
+translation.
 
 ## Pipelines and uniforms
 

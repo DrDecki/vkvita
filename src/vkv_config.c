@@ -43,6 +43,7 @@ void vkvGetDefaultConfig(VkvConfig *c) {
 	c->ffVertexBufferSize = 1024u * 1024;
 	c->ffFrames           = 3;
 	c->storageArraySize   = 64;
+	c->shaderPackDir      = NULL;
 }
 
 static void vkv_apply_config(const VkvConfig *c) {
@@ -53,6 +54,8 @@ static void vkv_apply_config(const VkvConfig *c) {
 	g_vkv.cfg.logPath         = g_vkv.logPath[0] ? g_vkv.logPath : NULL;
 	g_vkv.cfg.shaderDir       = g_vkv.shaderDir;
 	g_vkv.cfg.sharkModulePath = g_vkv.sharkPath[0] ? g_vkv.sharkPath : NULL;
+	vkv_copy_str(g_vkv.shaderPackDir, sizeof(g_vkv.shaderPackDir), c->shaderPackDir);
+	g_vkv.cfg.shaderPackDir   = g_vkv.shaderPackDir[0] ? g_vkv.shaderPackDir : NULL;
 	if (!g_vkv.cfg.profileInterval) g_vkv.cfg.profileInterval = 120;
 	if (g_vkv.cfg.parameterBufferSize < 0x40000) g_vkv.cfg.parameterBufferSize = SCE_GXM_DEFAULT_PARAMETER_BUFFER_SIZE;
 	if (!g_vkv.cfg.displayQueueDepth) g_vkv.cfg.displayQueueDepth = 2;
@@ -144,10 +147,11 @@ int vkvLoadConfigFile(const char *path) {
 	buf[len] = 0;
 
 	VkvConfig c = g_vkv.cfg;
-	char logPath[256], shaderDir[256], shark[256];
+	char logPath[256], shaderDir[256], shark[256], pack[256];
 	vkv_copy_str(logPath, sizeof(logPath), g_vkv.cfg.logPath);
 	vkv_copy_str(shaderDir, sizeof(shaderDir), g_vkv.cfg.shaderDir);
 	vkv_copy_str(shark, sizeof(shark), g_vkv.cfg.sharkModulePath);
+	vkv_copy_str(pack, sizeof(pack), g_vkv.cfg.shaderPackDir);
 
 	char *save = NULL;
 	for (char *line = strtok_r(buf, "\r\n", &save); line; line = strtok_r(NULL, "\r\n", &save)) {
@@ -165,6 +169,7 @@ int vkvLoadConfigFile(const char *path) {
 		else if (!strcmp(k, "log_path"))         vkv_copy_str(logPath, sizeof(logPath), v);
 		else if (!strcmp(k, "shader_dir"))       vkv_copy_str(shaderDir, sizeof(shaderDir), v);
 		else if (!strcmp(k, "shark_module"))     vkv_copy_str(shark, sizeof(shark), v);
+		else if (!strcmp(k, "shader_pack_dir"))  vkv_copy_str(pack, sizeof(pack), v);
 		else if (!strcmp(k, "profile_interval")) c.profileInterval = strtoul(v, NULL, 0);
 		else if (!strcmp(k, "parameter_buffer_kb")) c.parameterBufferSize = strtoul(v, NULL, 0) * 1024;
 		else if (!strcmp(k, "display_queue_depth")) c.displayQueueDepth = strtoul(v, NULL, 0);
@@ -179,6 +184,7 @@ int vkvLoadConfigFile(const char *path) {
 	c.logPath = logPath[0] ? logPath : NULL;
 	c.shaderDir = shaderDir;
 	c.sharkModulePath = shark[0] ? shark : NULL;
+	c.shaderPackDir = pack[0] ? pack : NULL;
 	vkv_apply_config(&c);
 	vkv_log(VKV_LOG_INFO, "config loaded from %s (debug=0x%x compat=0x%x)", path,
 	        (unsigned)g_vkv.cfg.debugFlags, (unsigned)g_vkv.cfg.compatFlags);

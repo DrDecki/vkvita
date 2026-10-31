@@ -23,9 +23,7 @@ extern "C" {
 #define VKVITA_VERSION_MINOR 1
 #define VKVITA_VERSION_PATCH 0
 
-/* ------------------------------------------------------------------------ */
-/* Debug and profiling switches. All of them can be changed at runtime.      */
-/* ------------------------------------------------------------------------ */
+/* --- Debug and profiling switches. All of them can be changed at runtime. --- */
 typedef enum VkvDebugFlagBits {
 	VKV_DEBUG_LOG_INFO        = 1u << 0, /* general init/teardown info */
 	VKV_DEBUG_LOG_SHADERS     = 1u << 1, /* shader reflection + Cg compiler output */
@@ -39,9 +37,7 @@ typedef enum VkvDebugFlagBits {
 } VkvDebugFlagBits;
 typedef uint32_t VkvDebugFlags;
 
-/* ------------------------------------------------------------------------ */
-/* Compatibility switches for older code and porting quirks.                */
-/* ------------------------------------------------------------------------ */
+/* --- Compatibility switches for older code and porting quirks. --- */
 typedef enum VkvCompatFlagBits {
 	VKV_COMPAT_GL_CLIP_SPACE  = 1u << 0, /* OpenGL clip space: Y up, Z in [-1,1] */
 	VKV_COMPAT_INVERT_CULL    = 1u << 1, /* swap CW/CCW culling */
@@ -71,6 +67,7 @@ typedef struct VkvConfig {
 	uint32_t       ffVertexBufferSize; /* fixed-function streaming buffer per frame, default 1 MiB */
 	uint32_t       ffFrames;           /* fixed-function frames in flight, default 3 */
 	uint32_t       storageArraySize;   /* elements of a runtime array in a read-only storage buffer, default 64 */
+	const char    *shaderPackDir;      /* read-only GXP cache shipped with the app, e.g. "app0:shaders"; NULL = none */
 } VkvConfig;
 
 void     vkvGetDefaultConfig(VkvConfig *config);
@@ -88,9 +85,7 @@ void     vkvSetCompatFlags(VkvCompatFlags flags);
  */
 int      vkvLoadConfigFile(const char *path);
 
-/* ------------------------------------------------------------------------ */
-/* Logging                                                                  */
-/* ------------------------------------------------------------------------ */
+/* --- Logging --- */
 typedef enum VkvLogLevel {
 	VKV_LOG_DEBUG = 0,
 	VKV_LOG_INFO  = 1,
@@ -101,9 +96,7 @@ typedef void (*PFN_vkvLogCallback)(VkvLogLevel level, const char *message, void 
 void vkvSetLogCallback(PFN_vkvLogCallback callback, void *user);
 void vkvLog(VkvLogLevel level, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
-/* ------------------------------------------------------------------------ */
-/* Profiling                                                                */
-/* ------------------------------------------------------------------------ */
+/* --- Profiling --- */
 typedef struct VkvFrameStats {
 	uint32_t frame;            /* presented frames so far */
 	uint32_t drawCalls;
@@ -126,9 +119,7 @@ typedef struct VkvFrameStats {
 /* Stats of the last completed frame (updated by vkQueuePresentKHR). */
 void vkvGetFrameStats(VkvFrameStats *stats);
 
-/* ------------------------------------------------------------------------ */
-/* Display surface                                                          */
-/* ------------------------------------------------------------------------ */
+/* --- Display surface --- */
 /*
  * The Vita has one display. Either call this, or use the standard
  * VK_EXT_headless_surface (vkCreateHeadlessSurfaceEXT), which maps to the
@@ -136,9 +127,7 @@ void vkvGetFrameStats(VkvFrameStats *stats);
  */
 VkResult vkvCreateDisplaySurface(VkInstance instance, VkSurfaceKHR *surface);
 
-/* ------------------------------------------------------------------------ */
-/* Shaders                                                                  */
-/* ------------------------------------------------------------------------ */
+/* --- Shaders --- */
 /*
  * GXM cannot run SPIR-V directly. VkShaderModuleCreateInfo::pCode may hold:
  *   - a GXP binary (compiled offline with psp2cgc), detected by its "GXP" magic

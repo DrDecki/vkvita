@@ -21,7 +21,9 @@
 #ifndef VKV_SPIRV_MAGIC
 #define VKV_SPIRV_MAGIC 0x07230203u
 #endif
-#define VKV_SPIRV_HASH_SEED 0x53505601u
+/* Part of the cache key of translated shaders. Bump it whenever the Cg the
+ * translator emits changes, or old cache files keep being used. */
+#define VKV_SPIRV_HASH_SEED 0x53505602u
 
 static uint32_t vkv_fnv1a(const void *data, uint32_t size, uint32_t seed) {
 	const uint8_t *p = data;
@@ -81,13 +83,13 @@ void vkv_shark_term(struct VkDevice_T *dev) {
 	dev->sharkTried = false;
 }
 
-static void vkv_shader_path(char *out, size_t cap, uint32_t hash, VkvStage stage) {
-	snprintf(out, cap, "%s/%08x_%c.gxp", g_vkv.cfg.shaderDir, (unsigned)hash, stage == VKV_STAGE_VERTEX ? 'v' : 'f');
+static void vkv_shader_path(char *out, size_t cap, const char *dir, uint32_t hash, VkvStage stage) {
+	snprintf(out, cap, "%s/%08x_%c.gxp", dir, (unsigned)hash, stage == VKV_STAGE_VERTEX ? 'v' : 'f');
 }
 
-static SceGxmProgram *vkv_load_cached(uint32_t hash, VkvStage stage, uint32_t *outSize) {
+static SceGxmProgram *vkv_load_cached_from(const char *dir, uint32_t hash, VkvStage stage, uint32_t *outSize) {
 	char path[300];
-	vkv_shader_path(path, sizeof(path), hash, stage);
+	vkv_shader_path(path, sizeof(path), dir, hash, stage);
 	SceUID fd = sceIoOpen(path, SCE_O_RDONLY, 0);
 	if (fd < 0) return NULL;
 	int size = (int)sceIoLseek(fd, 0, SCE_SEEK_END);
@@ -103,12 +105,20 @@ static SceGxmProgram *vkv_load_cached(uint32_t hash, VkvStage stage, uint32_t *o
 	return p;
 }
 
+/* The writable cache first, then the read-only pack the app ships. */
+static SceGxmProgram *vkv_load_cached(uint32_t hash, VkvStage stage, uint32_t *outSize) {
+	SceGxmProgram *p = NULL;
+	if (vkv_compat(VKV_COMPAT_SHADER_CACHE)) p = vkv_load_cached_from(g_vkv.cfg.shaderDir, hash, stage, outSize);
+	if (!p && g_vkv.cfg.shaderPackDir) p = vkv_load_cached_from(g_vkv.cfg.shaderPackDir, hash, stage, outSize);
+	return p;
+}
+
 #if VKV_WITH_SHARK
 static void vkv_dump_shader(uint32_t hash, VkvStage stage, const void *data, uint32_t size, const char *name) {
 	char path[300];
 	sceIoMkdir("ux0:data/vkvita", 0777);
 	sceIoMkdir(g_vkv.cfg.shaderDir, 0777);
-	vkv_shader_path(path, sizeof(path), hash, stage);
+	vkv_shader_path(path, sizeof(path), g_vkv.cfg.shaderDir, hash, stage);
 	SceUID fd = sceIoOpen(path, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
 	if (fd < 0) { VKV_WARN("could not write %s", path); return; }
 	sceIoWrite(fd, data, size);
@@ -119,11 +129,8 @@ static void vkv_dump_shader(uint32_t hash, VkvStage stage, const void *data, uin
 
 SceGxmProgram *vkv_shark_compile(struct VkDevice_T *dev, const char *src, VkvStage stage, const char *name,
                                  uint32_t hash, uint32_t *outSize) {
-	SceGxmProgram *copy = NULL;
-	if (vkv_compat(VKV_COMPAT_SHADER_CACHE)) {
-		copy = vkv_load_cached(hash, stage, outSize);
-		if (copy) return copy;
-	}
+	SceGxmProgram *copy = vkv_load_cached(hash, stage, outSize);
+	if (copy) return copy;
 #if VKV_WITH_SHARK
 	if (!vkv_shark_init(dev)) return NULL;
 	uint64_t t0 = vkv_time_us();

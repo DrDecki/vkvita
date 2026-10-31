@@ -109,6 +109,20 @@ else
   echo "FAIL shader_cache"; fail=1
 fi
 
+# shaders shipped with the app: SPIR-V shaders compiled once, then loaded from a
+# read-only pack folder with the compiler unavailable and the cache off
+fs="$OUT/fs_pack"; rm -rf "$fs"; mkdir -p "$fs/ux0/data/vkvita"
+printf 'debug = dump_shaders\n' > "$fs/ux0/data/vkvita/config.txt"
+MOCK_ROOT="$fs" MOCK_FRAMES=5 ASAN_OPTIONS=detect_leaks=0 "$OUT/spirv_cube" > "$OUT/pack1.log" 2>&1 || fail=1
+mv "$fs/ux0/data/vkvita/shaders" "$fs/ux0/pack"
+printf 'debug = info, validation\ncompat = \nshader_pack_dir = ux0:pack\n' > "$fs/ux0/data/vkvita/config.txt"
+if MOCK_ROOT="$fs" MOCK_FRAMES=5 MOCK_NO_SHARK=1 ASAN_OPTIONS=detect_leaks=0 "$OUT/spirv_cube" > "$OUT/pack2.log" 2>&1 \
+   && grep -q "shader cache hit: ux0:pack/" "$OUT/pack2.log" && ! grep -q "\[vkvita ERROR\]" "$OUT/pack2.log"; then
+  echo "ok   shader_pack  (SPIR-V shaders loaded from the pack folder without the compiler)"
+else
+  echo "FAIL shader_pack"; fail=1
+fi
+
 # no compiler available: must fail cleanly with a clear message, not crash
 if MOCK_ROOT="$OUT/fs_noshark" MOCK_NO_SHARK=1 MOCK_FRAMES=5 ASAN_OPTIONS=detect_leaks=0 "$OUT/hello_triangle" > "$OUT/noshark.log" 2>&1; then :; fi
 if grep -q "libshacccg" "$OUT/noshark.log" && ! grep -q "AddressSanitizer\|runtime error" "$OUT/noshark.log"; then
