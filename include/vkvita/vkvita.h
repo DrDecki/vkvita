@@ -55,6 +55,7 @@ typedef struct VkvConfig {
 	uint32_t       ffVertexBufferSize;
 	uint32_t       ffFrames;
 	uint32_t       storageArraySize;
+	const char    *shaderPackDir;
 } VkvConfig;
 
 void     vkvGetDefaultConfig(VkvConfig *config);

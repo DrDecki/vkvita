@@ -100,6 +100,7 @@ The config file also works with an already finished VPK.
 |---|---|
 | `log_path` | File the log is written to |
 | `shader_dir` | Folder for dumped and cached shaders |
+| `shader_pack_dir` | Read-only folder with compiled shaders the app ships, for example `app0:shaders`. Checked after `shader_dir`, so players don't need `libshacccg.suprx` |
 | `shark_module` | Path to `libshacccg.suprx` |
 | `profile_interval=120` | Frames between profile reports |
 | `parameter_buffer_kb=16384` | Size of the GXM parameter buffer |
