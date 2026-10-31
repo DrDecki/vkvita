@@ -945,7 +945,9 @@ static char *rewrite(Tr *t, const char *hlsl) {
 		else if (!strcmp(lines[i], "struct SPIRV_Cross_Output")) collect_struct(t, lines, count, &i, t->out, &t->outCount);
 		else if (!strcmp(lines[i], "static float gl_PointSize;")) t->pointSize = t->stage == VKV_SPIRV_VERTEX;
 	}
-	/* shader model 3 compatibility drops gl_PointSize, GXM has it as PSIZE */
+	/* older SPIRV-Cross drops gl_PointSize for shader model 3, GXM has it as PSIZE */
+	for (uint32_t k = 0; k < t->outCount && t->pointSize; k++)
+		if (!strcmp(t->out[k].name, "gl_PointSize")) t->pointSize = false;
 	if (t->pointSize && t->outCount < MAX_IO) {
 		Io *io = &t->out[t->outCount++];
 		memset(io, 0, sizeof(*io));

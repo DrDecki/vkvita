@@ -3,5 +3,4 @@
 	url = https://github.com/KhronosGroup/Vulkan-Headers.git
 [submodule "third_party/SPIRV-Cross"]
 	path = third_party/SPIRV-Cross
-	url = https://github.com/DrDecki/SPIRV-Cross.git
-	branch = vkvita
+	url = https://github.com/KhronosGroup/SPIRV-Cross.git

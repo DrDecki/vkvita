@@ -52,7 +52,7 @@ Both are git submodules in `third_party/`:
 | Library | Version |
 |---|---|
 | [Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers) | upstream commit `73814d0` (`VK_HEADER_VERSION` 366) |
-| [SPIRV-Cross](https://github.com/DrDecki/SPIRV-Cross/tree/vkvita) | `sdk-1.3.239.0` with one commit on the `vkvita` branch that fixes the build where `uint32_t` is `unsigned long`, like on the Vita |
+| [SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross) | upstream commit `57e4efc` |
 
 Everything below can be changed at runtime without rebuilding, either in code (`vkvSetConfig`, `vkvSetDebugFlags`, `vkvSetCompatFlags`) or by creating `ux0:data/vkvita/config.txt` on the console:
 
