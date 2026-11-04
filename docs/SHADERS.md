@@ -25,11 +25,11 @@ shader (it is compiled once per stage); a GXP module has a fixed stage.
 ## SPIR-V
 
 SPIR-V modules are translated to Cg when the first pipeline uses them, then
-compiled like Cg source. There are two translators. By default the bundled
-SPIRV-Cross writes HLSL (shader model 3.0) and VkVita rewrites it into Sony's
-Cg dialect. With `spirv_backend = native` VkVita's own translator
-(`src/vkv_spirv_cg.c`) writes Cg straight from the SPIR-V and only falls back
-to SPIRV-Cross for what it can't do yet; `native_only` turns the fallback off.
+compiled like Cg source. VkVita's own translator (`src/vkv_spirv_cg.c`)
+writes Cg straight from the SPIR-V. For the few things it can't do yet it
+falls back to the bundled SPIRV-Cross, which writes HLSL (shader model 3.0)
+that VkVita rewrites into Sony's Cg dialect. `spirv_backend = native_only`
+turns the fallback off, `spirv_backend = cross` uses only SPIRV-Cross.
 Both give the same uniform and texture tables. Shaders cached or shipped as
 GXP are keyed by translator, so switching recompiles them.
 Nothing from the sections below has to be done by hand:

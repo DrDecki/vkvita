@@ -2,10 +2,10 @@
  * spirv2cg: translates a SPIR-V module into the Cg VkVita compiles at
  * runtime, for checking shaders on the PC or shipping them pretranslated.
  *
- *   spirv2cg [-n|-N] [-v|-f] shader.spv [out.cg]
+ *   spirv2cg [-N|-c] [-v|-f] shader.spv [out.cg]
  *
- * -n uses VkVita's own translator with SPIRV-Cross as fallback, -N only
- * VkVita's own translator.
+ * By default VkVita's own translator is used with SPIRV-Cross as fallback,
+ * -N uses only VkVita's own translator and -c only SPIRV-Cross.
  *
  * The stage is taken from -v/-f, or from ".vert"/".frag" in the file name.
  * Push constant and uniform buffer offsets are printed as comments.
@@ -25,12 +25,12 @@ static void log_cb(VkvSpirvLogLevel level, const char *msg, void *user) {
 
 int main(int argc, char **argv) {
 	int stage = -1, a = 1;
-	if (a < argc && !strcmp(argv[a], "-n")) { vkv_spirv_set_backend(1); a++; }
-	else if (a < argc && !strcmp(argv[a], "-N")) { vkv_spirv_set_backend(2); a++; }
+	if (a < argc && !strcmp(argv[a], "-N")) { vkv_spirv_set_backend(2); a++; }
+	else if (a < argc && !strcmp(argv[a], "-c")) { vkv_spirv_set_backend(0); a++; }
 	if (a < argc && !strcmp(argv[a], "-v")) { stage = VKV_SPIRV_VERTEX; a++; }
 	else if (a < argc && !strcmp(argv[a], "-f")) { stage = VKV_SPIRV_FRAGMENT; a++; }
 	if (a >= argc) {
-		fprintf(stderr, "usage: %s [-n|-N] [-v|-f] shader.spv [out.cg]\n", argv[0]);
+		fprintf(stderr, "usage: %s [-N|-c] [-v|-f] shader.spv [out.cg]\n", argv[0]);
 		return 2;
 	}
 	const char *in = argv[a], *outPath = a + 1 < argc ? argv[a + 1] : NULL;

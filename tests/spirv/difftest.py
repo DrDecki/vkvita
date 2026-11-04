@@ -6,8 +6,8 @@ SPIR-V from glslang on lavapipe. The candidate translates the same SPIR-V to
 Cg with spirv2cg, parses that Cg as HLSL with glslang, feeds the uniforms the
 way VkVita does (from the reported table) and renders it the same way.
 
-S2C_MODE picks the translator: -N (default) VkVita's own, -n with SPIRV-Cross
-as fallback, empty for SPIRV-Cross. OPT=-O runs spirv-opt on the SPIR-V first.
+S2C_MODE picks the translator: -N (default) VkVita's own, -c SPIRV-Cross,
+empty for VkVita's own with SPIRV-Cross as fallback. OPT=-O runs spirv-opt on the SPIR-V first.
 
 Annotations in the GLSL:
   //@ubo <binding> <words...>   set 0 uniform buffer, words: 1.5 (float), i3 (int), u7 (uint)

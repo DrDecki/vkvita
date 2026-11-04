@@ -146,7 +146,7 @@ static uint32_t g_storageArraySize = 64;
 void vkv_spirv_set_storage_array_size(uint32_t elements) { g_storageArraySize = elements ? elements : 64; }
 static int g_scissorVariant;
 void vkv_spirv_set_scissor_variant(int enabled) { g_scissorVariant = enabled; }
-static int g_backend;
+static int g_backend = 1;
 void vkv_spirv_set_backend(int backend) { g_backend = backend; }
 int vkv_spirv_get_backend(void) { return g_backend; }
 

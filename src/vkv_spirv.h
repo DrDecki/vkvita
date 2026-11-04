@@ -64,8 +64,8 @@ void vkv_spirv_set_storage_array_size(uint32_t elements);
 void vkv_spirv_set_scissor_variant(int enabled);
 void vkv_spirv_free(VkvSpirvResult *r);
 
-/* Which translator vkv_spirv_translate uses: 0 SPIRV-Cross, 1 VkVita's own
- * (falls back to SPIRV-Cross for what it can't do yet), 2 only VkVita's own. */
+/* Which translator vkv_spirv_translate uses: 1 VkVita's own, falling back to
+ * SPIRV-Cross for what it can't do yet (default), 2 only VkVita's own, 0 only SPIRV-Cross. */
 void vkv_spirv_set_backend(int backend);
 int  vkv_spirv_get_backend(void);
 

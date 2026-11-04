@@ -45,6 +45,7 @@ void vkvGetDefaultConfig(VkvConfig *c) {
 	c->storageArraySize   = 64;
 	c->shaderPackDir      = NULL;
 	c->splash             = 1;
+	c->spirvBackend       = 1;
 }
 
 static void vkv_apply_config(const VkvConfig *c) {
