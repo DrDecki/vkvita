@@ -57,6 +57,7 @@ typedef struct VkvConfig {
 	uint32_t       storageArraySize;
 	const char    *shaderPackDir;
 	uint32_t       splash;
+	uint32_t       spirvBackend;
 } VkvConfig;
 
 void     vkvGetDefaultConfig(VkvConfig *config);

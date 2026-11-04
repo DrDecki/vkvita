@@ -12,6 +12,7 @@ for f in cfg cross cross_c cross_parsed_ir glsl hlsl parser; do
 done
 gcc -std=gnu11 -O2 -I "$SC" -c "$ROOT/src/vkv_spirv.c" -o "$TMP/vkv_spirv.o" &
 gcc -std=gnu11 -O2 -c "$ROOT/src/vkv_spirv_lower.c" -o "$TMP/vkv_spirv_lower.o" &
+gcc -std=gnu11 -O2 -Wall -Wno-unused-function -I "$SC" -c "$ROOT/src/vkv_spirv_cg.c" -o "$TMP/vkv_spirv_cg.o" &
 gcc -std=gnu11 -O2 -c "$ROOT/tools/spirv2cg.c" -o "$TMP/spirv2cg.o" &
 wait
 g++ "$TMP"/*.o -o "$OUT"

@@ -54,6 +54,9 @@ void vkv_spirv_set_storage_array_size(uint32_t elements);
 void vkv_spirv_set_scissor_variant(int enabled);
 void vkv_spirv_free(VkvSpirvResult *r);
 
+void vkv_spirv_set_backend(int backend);
+int  vkv_spirv_get_backend(void);
+
 int vkv_spirv_lower_subpass(const uint32_t *words, size_t wordCount, uint32_t **outWords, size_t *outCount);
 
 int vkv_spirv_lower_builtins(const uint32_t *words, size_t wordCount, uint32_t **outWords, size_t *outCount);
@@ -66,6 +69,10 @@ int vkv_spirv_lower_ssbo(const uint32_t *words, size_t wordCount, uint32_t array
                          size_t *outCount, VkvSpirvStride *strides, uint32_t *strideCount, uint32_t maxStrides);
 
 int vkv_spirv_lower_intdiv(const uint32_t *words, size_t wordCount, uint32_t **outWords, size_t *outCount);
+
+void vkv_spirv_native_set_options(uint32_t storageArraySize, int scissorVariant);
+int  vkv_spirv_translate_native(const uint32_t *words, size_t wordCount, VkvSpirvStage stage, VkvSpirvLogFn log,
+                                void *user, const VkvSpirvStride *strides, uint32_t strideCount, VkvSpirvResult *out);
 
 #ifdef __cplusplus
 }

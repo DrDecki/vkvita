@@ -13,10 +13,12 @@ static void log_cb(VkvSpirvLogLevel level, const char *msg, void *user) {
 
 int main(int argc, char **argv) {
 	int stage = -1, a = 1;
+	if (a < argc && !strcmp(argv[a], "-n")) { vkv_spirv_set_backend(1); a++; }
+	else if (a < argc && !strcmp(argv[a], "-N")) { vkv_spirv_set_backend(2); a++; }
 	if (a < argc && !strcmp(argv[a], "-v")) { stage = VKV_SPIRV_VERTEX; a++; }
 	else if (a < argc && !strcmp(argv[a], "-f")) { stage = VKV_SPIRV_FRAGMENT; a++; }
 	if (a >= argc) {
-		fprintf(stderr, "usage: %s [-v|-f] shader.spv [out.cg]\n", argv[0]);
+		fprintf(stderr, "usage: %s [-n|-N] [-v|-f] shader.spv [out.cg]\n", argv[0]);
 		return 2;
 	}
 	const char *in = argv[a], *outPath = a + 1 < argc ? argv[a + 1] : NULL;
@@ -53,10 +55,15 @@ int main(int argc, char **argv) {
 	if (!o) { perror(outPath); vkv_spirv_free(&r); return 1; }
 	for (uint32_t i = 0; i < r.uniCount; i++) {
 		const VkvSpirvUniform *u = &r.unis[i];
-		if (u->set < 0) fprintf(o, "/* uniform %s <- push constants +%u */\n", u->name, (unsigned)u->offset);
+		static const char *const kinds[] = { "", " int", " uint" };
+		char stride[32] = "";
+		if (u->stride) snprintf(stride, sizeof(stride), " stride %u", (unsigned)u->stride);
+		if (u->set < 0)
+			fprintf(o, "/* uniform %s <- push constants +%u%s%s */\n", u->name, (unsigned)u->offset, stride,
+			        kinds[u->scalar]);
 		else
-			fprintf(o, "/* uniform %s <- set %d binding %u +%u */\n", u->name, (int)u->set, (unsigned)u->binding,
-			        (unsigned)u->offset);
+			fprintf(o, "/* uniform %s <- set %d binding %u +%u%s%s */\n", u->name, (int)u->set, (unsigned)u->binding,
+			        (unsigned)u->offset, stride, kinds[u->scalar]);
 	}
 	for (uint32_t i = 0; i < r.texCount; i++) {
 		const VkvSpirvTexture *t = &r.texs[i];
