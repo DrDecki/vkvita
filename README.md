@@ -6,11 +6,13 @@ VkVita is a wrapper between Vulkan and sceGxm. It lets you use a large part of t
 
 There are no releases. Whatever is on `main` is the current build.
 
+[vkQuake2 for PS Vita](https://github.com/DrDecki/vkquake2-vita) runs on VkVita and is the best example of what it can do.
+
 ## Prerequisites
 
 To compile SPIR-V or Cg shaders at runtime, VkVita needs vitaShaRK and a decrypted `libshacccg.suprx` in `ur0:data/` on your console. You can install it with ShaRKBR33D or the PIB configuration tool. Most vitaGL ports need the same file, so you probably have it already.
 
-If you build with `VKV_WITH_SHARK=OFF`, you can ship precompiled GXP shaders instead and don't need the file at all.
+Players of your game don't need the file if you ship the compiled shaders with it. Run your game once with `compat = shader_cache` (or `dump_shaders`), copy the `.gxp` files from `shader_dir` into your VPK and set `shaderPackDir` to that folder, for example `app0:shaders`. If you build with `VKV_WITH_SHARK=OFF`, VkVita only uses shipped shaders.
 
 Not every SPIR-V feature has a GXM counterpart. What works and what doesn't is listed in [docs/SHADERS.md](docs/SHADERS.md).
 
@@ -127,6 +129,7 @@ Most Vulkan code works unchanged. The parts that are different on the Vita:
 
 - **Surface:** use `VK_EXT_headless_surface` or `vkvCreateDisplaySurface()`. The swapchain is always 960x544.
 - **Shaders:** SPIR-V works for the usual vertex and fragment shaders. Storage buffers work when the shader only reads them. Compute does not exist on GXM.
+- **Memory:** type 0 is video memory (CDRAM), type 1 is uncached main memory, type 2 is cached main memory the GPU can't see. Ask for `HOST_CACHED` on uniform buffers you update every frame, VkVita reads them on the CPU and that is a lot faster from cached memory.
 - **Limits:** one color attachment per subpass, no compute. MSAA works with 2x and 4x. Mipmaps need power-of-two textures. The full list is in [docs/COVERAGE.md](docs/COVERAGE.md).
 
 ### Boot screen
