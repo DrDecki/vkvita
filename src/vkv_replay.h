@@ -6,6 +6,8 @@
 
 #include <math.h>
 
+#define VKV_UNI_SHADOW 2048
+
 typedef struct VkvReplay {
 	struct VkDevice_T        *dev;
 	SceGxmContext            *ctx;
@@ -36,6 +38,8 @@ typedef struct VkvReplay {
 
 	VkvPipeline              *pipe;
 	bool                      pipeDirty;
+	bool                      resDirty;
+	bool                      dynDirty;
 	int                       vpVariant;
 	VkvBuffer                *vb[VKV_MAX_BINDINGS];
 	uint32_t                  vbOff[VKV_MAX_BINDINGS];
@@ -55,6 +59,10 @@ typedef struct VkvReplay {
 	uint32_t                  dynSet;
 	float                     biasConst, biasSlope;
 	float                     lineWidth;
+
+	uint8_t                   uniShadow[2][VKV_UNI_SHADOW] __attribute__((aligned(16)));
+	uint8_t                   uniStage[VKV_UNI_SHADOW] __attribute__((aligned(16)));
+	uint32_t                  uniShadowSize[2];
 } VkvReplay;
 
 void vkv_replay(VkvReplay *R, struct VkCommandBuffer_T *cb);

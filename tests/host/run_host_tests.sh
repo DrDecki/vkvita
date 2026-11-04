@@ -51,7 +51,7 @@ if [[ -z "${SPIRV_CROSS:-}" ]]; then
 fi
 
 build_sample() { # name source
-  $LINKER "${CFLAGS[@]}" -x c "$2" -x none "${objs[@]}" "${SPIRV_LINK[@]}" -lm -o "$OUT/$1"
+  $LINKER "${CFLAGS[@]}" -x c "$2" -x none "${objs[@]}" "${SPIRV_LINK[@]}" -lm -lpthread -o "$OUT/$1"
 }
 build_sample hello_triangle "$ROOT/samples/hello_triangle/main.c"
 build_sample textured_cube  "$ROOT/samples/textured_cube/main.c"

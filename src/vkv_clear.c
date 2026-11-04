@@ -244,6 +244,7 @@ static bool vkv_clear_with_quads(VkvReplay *R, const VkvCmdClearAttach *c) {
 	}
 	if (depth || stencil) g_vkv.cur.clears++;
 	R->pipeDirty = true;
+	R->resDirty = true;
 	R->vpVariant = -1;
 	R->viewportDirty = true;
 	R->scissorDirty = true;

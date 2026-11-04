@@ -56,6 +56,7 @@ typedef struct VkvConfig {
 	uint32_t       ffFrames;
 	uint32_t       storageArraySize;
 	const char    *shaderPackDir;
+	uint32_t       splash;
 } VkvConfig;
 
 void     vkvGetDefaultConfig(VkvConfig *config);
@@ -64,6 +65,8 @@ void     vkvGetConfig(VkvConfig *config);
 void     vkvSetDebugFlags(VkvDebugFlags flags);
 void     vkvSetCompatFlags(VkvCompatFlags flags);
 int      vkvLoadConfigFile(const char *path);
+
+void     vkvShowSplash(void);
 
 typedef enum VkvLogLevel {
 	VKV_LOG_DEBUG = 0,

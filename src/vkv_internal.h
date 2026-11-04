@@ -68,6 +68,8 @@ typedef struct VkvObject {
 typedef struct VkvStatsCounters {
 	uint32_t drawCalls, indices, scenes, pipelineBinds, descriptorBinds, clears, copies, ffDraws;
 	uint64_t submitUs, gpuWaitUs;
+	uint32_t drawSamples, uniformReuses;
+	uint64_t drawStateUs, drawUniformUs, drawGxmUs;
 } VkvStatsCounters;
 
 typedef struct VkvGlobals {
@@ -75,6 +77,9 @@ typedef struct VkvGlobals {
 	char               logPath[256];
 	char               shaderDir[256];
 	char               shaderPackDir[256];
+	uint32_t           drawSamples;
+	uint32_t           uniformReuses, drawsInInterval;
+	uint64_t           drawStateUs, drawUniformUs, drawGxmUs;
 	char               sharkPath[256];
 	PFN_vkvLogCallback logCb;
 	void              *logUser;
@@ -95,6 +100,11 @@ extern VkvGlobals g_vkv;
 void vkv_log(VkvLogLevel lvl, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 void vkv_config_init_once(void);
 void vkv_load_default_config_file(void);
+
+void     vkv_splash_on_present(void);
+void     vkv_splash_shutdown(void);
+void     vkv_splash_draw(uint32_t *fb, uint32_t pitch, const uint8_t *mask, uint32_t ms, bool full);
+uint8_t *vkv_splash_decode_mask(void);
 uint64_t vkv_time_us(void);
 
 static inline bool vkv_dbg(uint32_t flag) {
@@ -384,6 +394,8 @@ typedef struct VkvUniformMap {
 	int8_t   set;
 	uint8_t  binding;
 	uint8_t  scalar;
+	uint8_t  direct;
+	uint16_t res;
 } VkvUniformMap;
 
 typedef struct VkShaderModule_T {
@@ -783,7 +795,8 @@ VkResult vkv_create_pipeline(struct VkDevice_T *dev, const VkGraphicsPipelineCre
 void     vkv_destroy_pipeline(struct VkDevice_T *dev, VkvPipeline *p);
 SceGxmFragmentProgram *vkv_pipeline_scissor_program(struct VkDevice_T *dev, VkvPipeline *p);
 
-enum { VKV_MEMTYPE_CDRAM = 0, VKV_MEMTYPE_RAM = 1, VKV_MEMTYPE_COUNT = 2 };
+enum { VKV_MEMTYPE_CDRAM = 0, VKV_MEMTYPE_RAM = 1, VKV_MEMTYPE_CPU = 2, VKV_MEMTYPE_COUNT = 3 };
+#define VKV_MEMTYPE_GPU_BITS ((1u << VKV_MEMTYPE_CDRAM) | (1u << VKV_MEMTYPE_RAM))
 
 PFN_vkVoidFunction vkv_lookup_proc(const char *name);
 

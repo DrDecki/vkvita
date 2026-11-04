@@ -256,6 +256,8 @@ uint32_t vkv_build_uniform_map(const VkvShaderModule *m, const SceGxmProgram *p,
 		out[count].set = set;
 		out[count].binding = src >= 0 && m->uniBinding ? m->uniBinding[src] : 0;
 		out[count].scalar = src >= 0 && m->uniScalar ? m->uniScalar[src] : 0;
+		out[count].res = (uint16_t)sceGxmProgramParameterGetResourceIndex(pp);
+		out[count].direct = arr <= 1 || comps == 4;
 		if (vkv_dbg(VKV_DEBUG_LOG_SHADERS)) {
 			if (set < 0)
 				vkv_log(VKV_LOG_INFO, "shader '%s': uniform %-16s <- push constant bytes [%u..%u)", m->name, name,
