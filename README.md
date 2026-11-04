@@ -110,6 +110,7 @@ The config file also works with an already finished VPK.
 | `scenes_per_frame=4` | Render target hint for GXM |
 | `ff_buffer_kb=1024` | Streaming buffer size of the fixed function layer per frame |
 | `ff_frames=3` | Frames in flight for the fixed function layer |
+| `splash=1` | Show the boot screen while the app loads, `0` turns it off |
 
 ## Using VkVita
 
@@ -127,6 +128,23 @@ Most Vulkan code works unchanged. The parts that are different on the Vita:
 - **Surface:** use `VK_EXT_headless_surface` or `vkvCreateDisplaySurface()`. The swapchain is always 960x544.
 - **Shaders:** SPIR-V works for the usual vertex and fragment shaders. Storage buffers work when the shader only reads them. Compute does not exist on GXM.
 - **Limits:** one color attachment per subpass, no compute. MSAA works with 2x and 4x. Mipmaps need power-of-two textures. The full list is in [docs/COVERAGE.md](docs/COVERAGE.md).
+
+### Boot screen
+
+While your app loads, VkVita shows its logo on a white screen with a small
+animated bar instead of a black screen. It starts in `vkCreateInstance` and
+goes away on the first `vkQueuePresentKHR`, so you get it without doing
+anything. It runs on its own thread and does not slow down loading.
+
+To cover the whole load, call `vkvShowSplash()` at the top of `main()`,
+before you read data files. To turn it off, set `splash = 0` in the
+config file or `config.splash = 0` before `vkvSetConfig()`.
+
+The logo comes from `docs/vkvita-logo.png`. To use your own, run
+`python3 tools/gen_splash_logo.py path/to/logo.png` and rebuild. The image
+should be one color on a transparent background. Its alpha channel becomes
+the shape and its color the logo color. The tool writes
+`src/vkv_splash_logo.h`.
 
 There is also a small fixed function layer (`vkvita_ff.h`) for old GL 1.x style code, see [docs/FIXED_FUNCTION.md](docs/FIXED_FUNCTION.md).
 
@@ -149,6 +167,8 @@ Samples can be found in the `samples` folder.
 | `standalone_template` | A starting point for your own project |
 
 ## Tools
+
+`tools/gen_splash_logo.py` turns a PNG into the boot screen logo, see [Boot screen](#boot-screen).
 
 `tools/spirv2cg` translates a SPIR-V file into the Cg VkVita would generate, so you can check a shader on the PC. Build it with `tools/build_spirv2cg.sh`.
 
