@@ -146,6 +146,9 @@ static uint32_t g_storageArraySize = 64;
 void vkv_spirv_set_storage_array_size(uint32_t elements) { g_storageArraySize = elements ? elements : 64; }
 static int g_scissorVariant;
 void vkv_spirv_set_scissor_variant(int enabled) { g_scissorVariant = enabled; }
+static int g_backend;
+void vkv_spirv_set_backend(int backend) { g_backend = backend; }
+int vkv_spirv_get_backend(void) { return g_backend; }
 
 static const char *k_unsupportedRes[] = {
 	"storage buffers", "storage images", "subpass inputs", "acceleration structures",
@@ -1135,6 +1138,16 @@ int vkv_spirv_translate(const uint32_t *words, size_t wordCount, VkvSpirvStage s
 		logf_(&c, VKV_SPIRV_LOG_INFO, "subpass inputs are read as textures at the current pixel");
 		words = lowered;
 		wordCount = loweredCount;
+	}
+
+	if (g_backend) {
+		vkv_spirv_native_set_options(g_storageArraySize, g_scissorVariant);
+		int nr = vkv_spirv_translate_native(words, wordCount, stage, log, user, t->strides, t->strideCount, out);
+		if (nr == 0 || nr == -1 || g_backend == 2) {
+			free(lowered); free(intdiv); free(ssbo); free(builtins); free(t);
+			return nr == 0 ? 0 : -1;
+		}
+		logf_(&c, VKV_SPIRV_LOG_INFO, "using SPIRV-Cross for this shader");
 	}
 
 	if (spvc_context_create(&ctx) != SPVC_SUCCESS) {

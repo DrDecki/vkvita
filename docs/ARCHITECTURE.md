@@ -46,6 +46,7 @@ replay and `sceGxmEndScene` runs at the end.
 | `src/vkv_formats.c` | VkFormat to GXM format table |
 | `src/vkv_shader.c` | Shader modules: GXP binaries, Cg via vitaShaRK, SPIR-V via the translator; shader cache |
 | `src/vkv_spirv.c` | SPIR-V to Cg: SPIRV-Cross makes HLSL, this file rewrites it into Sony Cg |
+| `src/vkv_spirv_cg.c` | SPIR-V to Cg without SPIRV-Cross: VkVita's own translator, picked with `spirv_backend` |
 | `src/vkv_spirv_lower.c` | Changes to the SPIR-V before translation (subpass inputs, built-ins, integer division, storage buffers) |
 | `src/vkv_pipeline.c` | Descriptor sets, pipeline layouts, render passes, framebuffers, graphics pipelines |
 | `src/vkv_cmd.c` | Command pools and buffers, recording of all `vkCmd*` calls |
@@ -94,7 +95,9 @@ A shader module can be one of three things:
 2. Cg source, compiled with vitaShaRK at pipeline creation.
 3. SPIR-V. `vkv_spirv_lower.c` first rewrites the parts GXM cannot do. Then
    SPIRV-Cross turns it into HLSL and `vkv_spirv.c` rewrites that into the
-   Cg dialect of the Sony compiler. After that it goes the same way as Cg.
+   Cg dialect of the Sony compiler, or with `spirv_backend = native`
+   `vkv_spirv_cg.c` writes the Cg directly. After that it goes the same way
+   as Cg.
 
 Compiled programs can be cached as `.gxp` files by hash, so later starts
 skip the compiler. An app can also ship those files and point
@@ -150,6 +153,11 @@ against `tests/host/mock_sce.c`. The mock implements the GXM, display, ctrl
 and memory functions closely enough to run every sample with AddressSanitizer
 and to check things like matching multisample modes. Crashes and validation
 errors show up there before anything goes onto real hardware.
+
+`tests/spirv/run.sh` checks the SPIR-V translation itself. Every shader in
+`tests/spirv/shaders` is rendered on lavapipe twice, once as the original
+SPIR-V and once through the generated Cg (read back as HLSL by glslang), and
+the pixels have to match.
 
 `samples/shader_tests` is the hardware check: every tile tests one feature
 on the GPU and turns green when it works.

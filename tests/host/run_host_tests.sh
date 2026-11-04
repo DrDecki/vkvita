@@ -98,6 +98,10 @@ CONFIG_TXT=$'debug = info, validation, profile, shaders\ncompat = cpu_clear, gl_
   run cube_compat "$OUT/textured_cube"
 CONFIG_TXT=$'debug = validation, gpu_sync, calls\ncompat = fast_transfers, no_vsync' FRAMES=12 \
   run ff_debug "$OUT/fixed_function"
+# VkVita's own SPIR-V to Cg translator, without SPIRV-Cross as fallback
+for s in spirv_cube gpu_features subpasses shader_tests; do
+  CONFIG_TXT=$'debug = info, validation\nspirv_backend = native_only' FRAMES=12 run "native_$s" "$OUT/$s"
+done
 
 # second launch reuses the GXP files dumped by the first one (shader cache)
 fs="$OUT/fs_cache"; rm -rf "$fs"; mkdir -p "$fs"

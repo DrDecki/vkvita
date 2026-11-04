@@ -339,6 +339,7 @@ static SceGxmProgram *vkv_spirv_compile(struct VkDevice_T *dev, VkvShaderModule 
 	VkvSpirvResult r;
 	uint64_t t0 = vkv_time_us();
 	vkv_spirv_set_storage_array_size(g_vkv.cfg.storageArraySize);
+	vkv_spirv_set_backend((int)g_vkv.cfg.spirvBackend);
 	vkv_spirv_set_scissor_variant(scissor);
 	int tr = vkv_spirv_translate((const uint32_t *)m->code, m->codeSize / 4,
 	                             stage == VKV_STAGE_VERTEX ? VKV_SPIRV_VERTEX : VKV_SPIRV_FRAGMENT, vkv_spirv_log, m, &r);
@@ -499,7 +500,9 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateShaderModule(VkDevice device, const VkSha
 	memcpy(m->code, code, size);
 	m->code[size] = 0;
 	m->codeSize = size;
-	m->hash = vkv_fnv1a(code, size, src == VKV_SHADER_SOURCE_SPIRV ? VKV_SPIRV_HASH_SEED : 0);
+	/* the translators write different Cg, so cached GXP of one must not be used for the other */
+	m->hash = vkv_fnv1a(code, size, src == VKV_SHADER_SOURCE_SPIRV
+	                                ? VKV_SPIRV_HASH_SEED ^ (g_vkv.cfg.spirvBackend ? 0x00C60000u : 0) : 0);
 
 	if (ext && ext->debugName) snprintf(m->name, sizeof(m->name), "%s", ext->debugName);
 	else
