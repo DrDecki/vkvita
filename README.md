@@ -39,7 +39,7 @@ These CMake options are available:
 | Option | Description |
 |---|---|
 | `VKV_WITH_SHARK=AUTO` | Runtime Cg compiler through vitaShaRK. `AUTO` uses it if it's installed, `ON` requires it, `OFF` removes it |
-| `VKV_WITH_SPIRV=ON` | SPIR-V support through the bundled SPIRV-Cross. Adds about 850 KB of code and needs `-lstdc++` |
+| `VKV_WITH_SPIRV=ON` | SPIR-V support: VkVita's own SPIR-V to Cg translator, with the bundled SPIRV-Cross as fallback. SPIRV-Cross adds about 850 KB of code and needs `-lstdc++` |
 | `VKV_ENABLE_DEBUG=ON` | Compiles in logging, validation and profiling. `OFF` removes them for release builds |
 | `VKV_BUILD_SAMPLES=ON` | Builds the sample VPKs |
 | `VKV_INSTALL_VULKAN_HEADERS=ON` | Installs the bundled Khronos Vulkan headers |
