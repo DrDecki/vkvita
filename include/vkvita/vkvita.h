@@ -68,6 +68,7 @@ typedef struct VkvConfig {
 	uint32_t       ffFrames;           /* fixed-function frames in flight, default 3 */
 	uint32_t       storageArraySize;   /* elements of a runtime array in a read-only storage buffer, default 64 */
 	const char    *shaderPackDir;      /* read-only GXP cache shipped with the app, e.g. "app0:shaders"; NULL = none */
+	uint32_t       splash;             /* 1 = vkCreateInstance shows the boot screen until the first present, default 1 */
 } VkvConfig;
 
 void     vkvGetDefaultConfig(VkvConfig *config);
@@ -84,6 +85,13 @@ void     vkvSetCompatFlags(VkvCompatFlags flags);
  * See docs/DEBUGGING.md for the keys.
  */
 int      vkvLoadConfigFile(const char *path);
+
+/*
+ * Show the VkVita boot screen right away instead of waiting for
+ * vkCreateInstance. Call it first thing in main() to cover the whole load.
+ * It disappears on the first vkQueuePresentKHR. Does nothing if splash is 0.
+ */
+void     vkvShowSplash(void);
 
 /* --- Logging --- */
 typedef enum VkvLogLevel {

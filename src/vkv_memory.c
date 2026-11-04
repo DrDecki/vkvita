@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include "vkv_internal.h"
+#include <malloc.h>
 
 /* --- Raw GPU memory --- */
 bool vkv_gpu_alloc(VkvHeapKind kind, uint32_t size, SceGxmMemoryAttribFlags attr, VkvGpuBlock *out) {
@@ -174,6 +175,13 @@ VkResult vkv_memory_alloc(struct VkDevice_T *dev, uint32_t typeIndex, uint32_t s
 	m->size = size;
 	m->typeIndex = typeIndex;
 	if (align < 16) align = 16;
+	if (typeIndex == VKV_MEMTYPE_CPU) {
+		m->ptr = memalign(64, VKV_ALIGN(size, 64));
+		if (!m->ptr) return VK_ERROR_OUT_OF_HOST_MEMORY;
+		g_vkv.ramBytes += size;
+		if (vkv_dbg(VKV_DEBUG_PROFILE)) vkv_log(VKV_LOG_INFO, "cached CPU memory: %u bytes", size);
+		return VK_SUCCESS;
+	}
 	VkvHeapKind kind = typeIndex == VKV_MEMTYPE_CDRAM ? VKV_HEAP_CDRAM : VKV_HEAP_RAM;
 
 	if (size <= g_vkv.cfg.poolMaxAllocSize && align <= 4096) {
@@ -199,6 +207,12 @@ VkResult vkv_memory_alloc(struct VkDevice_T *dev, uint32_t typeIndex, uint32_t s
 
 void vkv_memory_free(struct VkDevice_T *dev, VkvMemory *m) {
 	(void)dev;
+	if (m->typeIndex == VKV_MEMTYPE_CPU) {
+		free(m->ptr);
+		g_vkv.ramBytes -= m->size;
+		m->ptr = NULL;
+		return;
+	}
 	if (m->block) vkv_pool_block_free(m->block, m->offset, VKV_ALIGN(m->size, 16));
 	else vkv_gpu_free(&m->dedicated);
 	m->ptr = NULL;
@@ -293,7 +307,10 @@ VKAPI_ATTR void VKAPI_CALL vkGetBufferMemoryRequirements(VkDevice device, VkBuff
 	VkvBuffer *b = VKV_ND(VkvBuffer, buffer);
 	req->size = VKV_ALIGN(b->size, 16);
 	req->alignment = 16;
-	req->memoryTypeBits = (1u << VKV_MEMTYPE_COUNT) - 1;
+	/* vertex and index data is read by the GPU, everything else only by VkVita on the CPU */
+	bool gpu = b->usage & (VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+	                       VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT);
+	req->memoryTypeBits = gpu ? VKV_MEMTYPE_GPU_BITS : (1u << VKV_MEMTYPE_COUNT) - 1;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL vkBindBufferMemory(VkDevice device, VkBuffer buffer, VkDeviceMemory memory,

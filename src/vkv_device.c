@@ -224,6 +224,7 @@ VKAPI_ATTR void VKAPI_CALL vkDestroyDevice(VkDevice device, const VkAllocationCa
 	if (!device) return;
 	VKV_TRACE("vkDestroyDevice");
 	vkv_device_teardown(device);
+	vkv_splash_shutdown();
 	device->obj.magic = VKV_MAGIC_DEAD;
 	free(device);
 }

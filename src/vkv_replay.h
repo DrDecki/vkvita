@@ -9,6 +9,8 @@
 
 #include <math.h>
 
+#define VKV_UNI_SHADOW 2048
+
 typedef struct VkvReplay {
 	struct VkDevice_T        *dev;
 	SceGxmContext            *ctx;
@@ -41,6 +43,8 @@ typedef struct VkvReplay {
 	/* bound state */
 	VkvPipeline              *pipe;
 	bool                      pipeDirty;
+	bool                      resDirty;       /* textures and uniform buffers must be bound again */
+	bool                      dynDirty;       /* only dynamic offsets changed: rebind if GXM reads the buffers */
 	int                       vpVariant;      /* vertex program variant currently set, -1 none */
 	VkvBuffer                *vb[VKV_MAX_BINDINGS];
 	uint32_t                  vbOff[VKV_MAX_BINDINGS];
@@ -61,6 +65,12 @@ typedef struct VkvReplay {
 	uint32_t                  dynSet;         /* VKV_DYN_* bits set by vkCmdSet* */
 	float                     biasConst, biasSlope;
 	float                     lineWidth;
+
+	/* last default uniform buffer contents per stage (0 vertex, 1 fragment); a draw with the
+	 * same program and the same values reuses the buffer instead of reserving a new one */
+	uint8_t                   uniShadow[2][VKV_UNI_SHADOW] __attribute__((aligned(16)));
+	uint8_t                   uniStage[VKV_UNI_SHADOW] __attribute__((aligned(16)));
+	uint32_t                  uniShadowSize[2]; /* 0 = nothing reusable */
 } VkvReplay;
 
 /* vkv_queue.c */

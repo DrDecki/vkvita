@@ -49,6 +49,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateInstance(const VkInstanceCreateInfo *ci, 
 	(void)alloc;
 	vkv_load_default_config_file();
 	VKV_TRACE("vkCreateInstance");
+	vkvShowSplash();
 
 	for (uint32_t i = 0; i < ci->enabledLayerCount; i++) {
 		if (!strcmp(ci->ppEnabledLayerNames[i], "VK_LAYER_KHRONOS_validation")) {
@@ -228,6 +229,10 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceMemoryProperties(VkPhysicalDevice 
 	p->memoryTypes[VKV_MEMTYPE_RAM].propertyFlags =
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 	p->memoryTypes[VKV_MEMTYPE_RAM].heapIndex = 1;
+	/* Cached main memory for buffers only VkVita reads (uniform, storage, indirect, transfer). */
+	p->memoryTypes[VKV_MEMTYPE_CPU].propertyFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+		VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+	p->memoryTypes[VKV_MEMTYPE_CPU].heapIndex = 1;
 }
 
 VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceMemoryProperties2(VkPhysicalDevice pd,

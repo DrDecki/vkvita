@@ -74,6 +74,7 @@ void vkv_begin_scene(VkvReplay *R, bool loadDepth, bool clearDepth, float depth,
 	R->inScene = true;
 	sceGxmSetViewportEnable(R->ctx, SCE_GXM_VIEWPORT_ENABLED);
 	R->pipeDirty = true;
+	R->resDirty = true;
 	R->vpVariant = -1;
 	R->viewportDirty = true;
 	R->scissorDirty = true;
@@ -212,7 +213,7 @@ void vkv_replay(VkvReplay *R, struct VkCommandBuffer_T *cb) {
 			break;
 		case VKV_CMD_BIND_PIPELINE: {
 			VkvPipeline *np = ((const VkvCmdBindPipeline *)h)->p;
-			if (np != R->pipe) { R->pipe = np; R->pipeDirty = true; }
+			if (np != R->pipe) { R->pipe = np; R->pipeDirty = true; R->resDirty = true; }
 			break;
 		}
 		case VKV_CMD_BIND_VB: {
@@ -230,10 +231,14 @@ void vkv_replay(VkvReplay *R, struct VkCommandBuffer_T *cb) {
 			uint32_t d = 0;
 			for (uint32_t i = 0; i < c->count; i++) {
 				VkvSet *s = c->sets[i];
+				if (R->sets[c->first + i] != s) R->resDirty = true;
 				R->sets[c->first + i] = s;
 				if (!s) continue;
-				for (uint32_t k = 0; k < s->layout->dynamicCount && k < VKV_MAX_DYNAMIC; k++)
-					R->dyn[c->first + i][k] = d < c->dynCount ? c->dyn[d++] : 0;
+				for (uint32_t k = 0; k < s->layout->dynamicCount && k < VKV_MAX_DYNAMIC; k++) {
+					uint32_t off = d < c->dynCount ? c->dyn[d++] : 0;
+					if (R->dyn[c->first + i][k] != off) R->dynDirty = true;
+					R->dyn[c->first + i][k] = off;
+				}
 			}
 			g_vkv.cur.descriptorBinds++;
 			break;
@@ -259,6 +264,7 @@ void vkv_replay(VkvReplay *R, struct VkCommandBuffer_T *cb) {
 			R->biasConst = c->constant; R->biasSlope = c->slope;
 			R->dynSet |= VKV_DYN_DEPTH_BIAS;
 			R->pipeDirty = true;
+			R->resDirty = true;
 			break;
 		}
 		case VKV_CMD_STENCIL: {
@@ -268,6 +274,7 @@ void vkv_replay(VkvReplay *R, struct VkCommandBuffer_T *cb) {
 			if (c->faces & VK_STENCIL_FACE_BACK_BIT) dst[1] = c->value;
 			R->dynSet |= c->what;
 			R->pipeDirty = true;
+			R->resDirty = true;
 			break;
 		}
 		case VKV_CMD_DRAW:
@@ -341,12 +348,14 @@ void vkv_replay(VkvReplay *R, struct VkCommandBuffer_T *cb) {
 			for (uint32_t i = 0; i < c->n; i++)
 				if (c->cbs[i] && c->cbs[i]->state == VKV_CB_EXECUTABLE) vkv_replay(R, c->cbs[i]);
 			R->pipeDirty = true;
+			R->resDirty = true;
 			break;
 		}
 		case VKV_CMD_LINE_WIDTH:
 			R->lineWidth = ((const VkvCmdLineWidth *)h)->width;
 			R->dynSet |= VKV_DYN_LINE_WIDTH;
 			R->pipeDirty = true;
+			R->resDirty = true;
 			break;
 		case VKV_CMD_QUERY_BEGIN: {
 			const VkvCmdQuery *c = (const VkvCmdQuery *)h;
@@ -417,6 +426,7 @@ VkResult vkv_queue_execute(struct VkDevice_T *dev, uint32_t cbCount, const VkCom
 		/* state does not carry across command buffers in Vulkan */
 		R.pipe = NULL;
 		R.pipeDirty = true;
+		R.resDirty = true;
 		memset(R.vb, 0, sizeof(R.vb));
 		R.ib = NULL;
 		memset(R.sets, 0, sizeof(R.sets));

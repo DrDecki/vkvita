@@ -237,7 +237,7 @@ VKAPI_ATTR void VKAPI_CALL vkGetImageMemoryRequirements(VkDevice device, VkImage
 	VkvImage *img = VKV_ND(VkvImage, image);
 	req->size = img->size;
 	req->alignment = img->alignment;
-	req->memoryTypeBits = (1u << VKV_MEMTYPE_COUNT) - 1;
+	req->memoryTypeBits = VKV_MEMTYPE_GPU_BITS;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL vkBindImageMemory(VkDevice device, VkImage image, VkDeviceMemory memory,

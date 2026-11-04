@@ -126,6 +126,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkAcquireNextImage2KHR(VkDevice device, const VkA
 
 VKAPI_ATTR VkResult VKAPI_CALL vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pi) {
 	VKV_TRACE("vkQueuePresentKHR");
+	vkv_splash_on_present();
 	struct VkDevice_T *dev = queue->device;
 	VkResult result = VK_SUCCESS;
 	for (uint32_t i = 0; i < pi->swapchainCount; i++) {

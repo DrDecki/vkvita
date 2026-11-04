@@ -18,6 +18,9 @@
  */
 #define _GNU_SOURCE
 
+#include <pthread.h>
+#include <stdbool.h>
+#include <unistd.h>
 #include <psp2/gxm.h>
 #include <psp2/display.h>
 #include <psp2/ctrl.h>
@@ -83,6 +86,50 @@ SceUInt64 sceKernelGetProcessTimeWide(void) {
 }
 
 int sceKernelDelayThread(SceUInt delay) { (void)delay; return 0; }
+
+/* Threads map to pthreads. Only what the boot screen needs. */
+#define MOCK_MAX_THREADS 8
+static struct { pthread_t t; SceKernelThreadEntry entry; bool used, started; } g_threads[MOCK_MAX_THREADS];
+
+static void *mock_thread_main(void *arg) {
+	int i = (int)(intptr_t)arg;
+	g_threads[i].entry(0, NULL);
+	return NULL;
+}
+
+SceUID sceKernelCreateThread(const char *name, SceKernelThreadEntry entry, int prio, SceSize stack, SceUInt attr,
+                             int affinity, const SceKernelThreadOptParam *opt) {
+	(void)name; (void)prio; (void)stack; (void)attr; (void)affinity; (void)opt;
+	for (int i = 0; i < MOCK_MAX_THREADS; i++)
+		if (!g_threads[i].used) { g_threads[i].used = true; g_threads[i].started = false; g_threads[i].entry = entry; return 0x100 + i; }
+	return -1;
+}
+
+int sceKernelStartThread(SceUID thid, SceSize arglen, void *argp) {
+	(void)arglen; (void)argp;
+	int i = thid - 0x100;
+	if (i < 0 || i >= MOCK_MAX_THREADS || !g_threads[i].used) mock_fail("start of unknown thread");
+	g_threads[i].started = pthread_create(&g_threads[i].t, NULL, mock_thread_main, (void *)(intptr_t)i) == 0;
+	return g_threads[i].started ? 0 : -1;
+}
+
+int sceKernelWaitThreadEnd(SceUID thid, int *stat, SceUInt *timeout) {
+	(void)timeout;
+	int i = thid - 0x100;
+	if (i < 0 || i >= MOCK_MAX_THREADS || !g_threads[i].started) mock_fail("wait for unknown thread");
+	pthread_join(g_threads[i].t, NULL);
+	g_threads[i].started = false;
+	if (stat) *stat = 0;
+	return 0;
+}
+
+int sceKernelDeleteThread(SceUID thid) {
+	int i = thid - 0x100;
+	if (i < 0 || i >= MOCK_MAX_THREADS || !g_threads[i].used) mock_fail("delete of unknown thread");
+	if (g_threads[i].started) pthread_detach(g_threads[i].t);
+	g_threads[i].used = false;
+	return 0;
+}
 
 #define MAX_BLOCKS 512
 static struct { void *base; size_t size; int used; int mapped; } g_blocks[MAX_BLOCKS];
@@ -693,6 +740,7 @@ int sceGxmBeginScene(SceGxmContext *ctx, unsigned int flags, const SceGxmRenderT
 	const SceGxmDepthStencilSurface *ds) {
 	(void)ctx; (void)flags; (void)vr; (void)vs; (void)fs;
 	if (g_inScene) mock_fail("BeginScene inside a scene");
+	g_vubFresh = g_fubFresh = 0;
 	if (!rt) mock_fail("BeginScene without render target");
 	void *data = NULL;
 	memcpy(&data, &cs->pbeEmitWords[0], sizeof(void *));
@@ -755,7 +803,7 @@ int sceDisplaySetFrameBuf(const SceDisplayFrameBuf *fb, SceDisplaySetBufSync syn
 	touch(fb->base, (size_t)fb->pitch * 4 * (fb->height - 1) + fb->width * 4);
 	return 0;
 }
-int sceDisplayWaitVblankStart(void) { return 0; }
+int sceDisplayWaitVblankStart(void) { usleep(1000); return 0; }
 
 int sceGxmTransferFill(uint32_t color, SceGxmTransferFormat fmt, void *dst, uint32_t x, uint32_t y, uint32_t w,
 	uint32_t h, int32_t stride, SceGxmSyncObject *sync, uint32_t flags, const SceGxmNotification *n) {
@@ -891,7 +939,8 @@ int sceGxmDraw(SceGxmContext *c, SceGxmPrimitiveType prim, SceGxmIndexFormat ifm
 			touch_all(base + (size_t)v * g_vp->streams[at->streamIndex].stride + at->offset, attr_size(at));
 		}
 	}
-	g_vubFresh = g_fubFresh = 0;
+	/* like libgxm the last reserved default uniform buffer stays bound for later draws, until the
+	 * program changes or a new scene starts */
 	g_draws++;
 	g_indices += count;
 	return 0;

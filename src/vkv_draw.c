@@ -20,12 +20,14 @@ static void vkv_apply_pipeline(VkvReplay *R, VkvPipeline *p, int variant) {
 	if (R->pipeDirty || R->vpVariant != variant) {
 		sceGxmSetVertexProgram(ctx, vp);
 		R->vpVariant = variant;
+		R->uniShadowSize[0] = 0;
 	}
 	if (!R->pipeDirty) return;
 	R->pipeDirty = false;
 	g_vkv.cur.pipelineBinds++;
 	sceGxmSetFragmentProgram(ctx, p->fp);
 	R->fpScissorOn = false;
+	R->uniShadowSize[1] = 0;
 	sceGxmSetCullMode(ctx, vkv_cull(p));
 	sceGxmSetFrontDepthFunc(ctx, p->depthFunc);
 	sceGxmSetBackDepthFunc(ctx, p->depthFunc);
@@ -146,6 +148,11 @@ static const uint8_t *vkv_uniform_buffer_data(VkvReplay *R, int set, uint32_t bi
 	return NULL;
 }
 
+static void vkv_set_floats(void *buf, const VkvUniformMap *u, uint32_t first, uint32_t count, const void *src) {
+	if (u->direct) memcpy((float *)buf + u->res + first, src, count * 4);
+	else sceGxmSetUniformDataF(buf, u->param, first, count, src);
+}
+
 static void vkv_write_uniforms_one(void *buf, const VkvUniformMap *u, const uint8_t *base) {
 	if (u->scalar) {
 		float conv[4];
@@ -155,13 +162,12 @@ static void vkv_write_uniforms_one(void *buf, const VkvUniformMap *u, const uint
 			memcpy(&bits, base + u->offset + k * 4, 4);
 			conv[k] = u->scalar == 1 ? (float)(int32_t)bits : (float)bits;
 		}
-		sceGxmSetUniformDataF(buf, u->param, 0, c, conv);
+		vkv_set_floats(buf, u, 0, c, conv);
 	} else if (u->elems <= 1 || u->elemStride == u->comps * 4) {
-		sceGxmSetUniformDataF(buf, u->param, 0, u->comps * u->elems, (const float *)(base + u->offset));
+		vkv_set_floats(buf, u, 0, u->comps * u->elems, base + u->offset);
 	} else {
 		for (uint32_t e = 0; e < u->elems; e++)
-			sceGxmSetUniformDataF(buf, u->param, e * u->comps, u->comps,
-			                      (const float *)(base + u->offset + e * u->elemStride));
+			vkv_set_floats(buf, u, e * u->comps, u->comps, base + u->offset + e * u->elemStride);
 	}
 }
 
@@ -198,6 +204,36 @@ static void vkv_write_uniforms(VkvReplay *R, void *buf, const VkvUniformMap *map
 		}
 		vkv_write_uniforms_one(buf, u, base);
 	}
+}
+
+/* Fills the default uniform buffer of one stage. When every value is a plain copy the buffer is
+ * built on the side first, and if it matches what the last draw with this program used, that
+ * buffer stays in place: reserving and filling a new one is most of the cost of a draw. */
+static void vkv_feed_uniforms(VkvReplay *R, int stage, uint32_t size, const VkvUniformMap *map, uint32_t n,
+                              const char *shader) {
+	if (!size) return;
+	bool direct = size <= VKV_UNI_SHADOW;
+	for (uint32_t i = 0; i < n && direct; i++) direct = map[i].direct;
+	void *ub;
+	if (!direct) {
+		R->uniShadowSize[stage] = 0;
+		int r = stage ? sceGxmReserveFragmentDefaultUniformBuffer(R->ctx, &ub)
+		              : sceGxmReserveVertexDefaultUniformBuffer(R->ctx, &ub);
+		if (r >= 0) vkv_write_uniforms(R, ub, map, n, shader);
+		return;
+	}
+	memset(R->uniStage, 0, size);
+	vkv_write_uniforms(R, R->uniStage, map, n, shader);
+	if (R->uniShadowSize[stage] == size && !memcmp(R->uniShadow[stage], R->uniStage, size)) {
+		g_vkv.cur.uniformReuses++;
+		return;
+	}
+	int r = stage ? sceGxmReserveFragmentDefaultUniformBuffer(R->ctx, &ub)
+	              : sceGxmReserveVertexDefaultUniformBuffer(R->ctx, &ub);
+	if (r < 0) { R->uniShadowSize[stage] = 0; return; }
+	memcpy(ub, R->uniStage, size);
+	memcpy(R->uniShadow[stage], R->uniStage, size);
+	R->uniShadowSize[stage] = size;
 }
 
 static VkvDescriptor *vkv_find_descriptor(VkvReplay *R, int set, uint32_t binding, uint32_t element) {
@@ -243,6 +279,11 @@ static void vkv_bind_resources(VkvReplay *R, const VkvPipeline *p) {
 				uint32_t slot = d->binding;
 				if (d->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || d->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC) {
 					if (slot >= SCE_GXM_MAX_UNIFORM_BUFFERS || !d->buffer->ptr) continue;
+					if (d->buffer->mem && d->buffer->mem->typeIndex == VKV_MEMTYPE_CPU) {
+						if (p->bufferMask & (1u << slot))
+							VKV_UNSUPPORTED("uniform buffers in cached memory for Cg shaders that read them on the GPU");
+						continue;
+					}
 					uint32_t off = d->offset;
 					if (d->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC) off += R->dyn[si][lb->dynIndex + e];
 					const void *ptr = d->buffer->ptr + off;
@@ -352,6 +393,9 @@ static const void *vkv_strip_indices(VkvReplay *R, const void *appIdx, bool *is3
 }
 
 void vkv_exec_draw(VkvReplay *R, const VkvCmdDraw *c, bool indexed) {
+	static uint32_t s_sample;
+	bool timed = vkv_dbg(VKV_DEBUG_PROFILE) && (++s_sample & 7) == 0;
+	uint64_t t0 = timed ? vkv_time_us() : 0, t1 = 0, t2 = 0;
 	VkvPipeline *p = R->pipe;
 	if (!R->inScene || !p) return;
 	if (!p->primSupported || p->vkCull == VK_CULL_MODE_FRONT_AND_BACK) return;
@@ -393,8 +437,14 @@ void vkv_exec_draw(VkvReplay *R, const VkvCmdDraw *c, bool indexed) {
 	if (exact != R->fpScissorOn) {
 		sceGxmSetFragmentProgram(R->ctx, exact ? p->fpScissor : p->fp);
 		R->fpScissorOn = exact;
+		R->uniShadowSize[1] = 0;
 	}
-	vkv_bind_resources(R, p);
+	/* textures and uniform buffers only change with the pipeline or the descriptor sets */
+	if (R->resDirty || (R->dynDirty && p->bufferMask)) {
+		vkv_bind_resources(R, p);
+		R->resDirty = false;
+		R->dynDirty = false;
+	}
 
 	/* base vertex: shift every per-vertex stream */
 	int32_t baseVertex = indexed ? c->vertexOffset : (int32_t)c->first;
@@ -415,19 +465,22 @@ void vkv_exec_draw(VkvReplay *R, const VkvCmdDraw *c, bool indexed) {
 		}
 		if (!ok) return;
 
-		/* push constants -> default uniform buffers (re-reserved per draw) */
-		void *ub;
-		if (p->vDefaultSize && sceGxmReserveVertexDefaultUniformBuffer(R->ctx, &ub) >= 0)
-			vkv_write_uniforms(R, ub, p->vuni, p->vuniCount, p->vname);
-		if (exact) {
-			if (p->fDefaultSizeScissor && sceGxmReserveFragmentDefaultUniformBuffer(R->ctx, &ub) >= 0)
-				vkv_write_uniforms(R, ub, p->funiScissor, p->funiScissorCount, p->fname);
-		} else if (p->fDefaultSize && sceGxmReserveFragmentDefaultUniformBuffer(R->ctx, &ub) >= 0) {
-			vkv_write_uniforms(R, ub, p->funi, p->funiCount, p->fname);
-		}
+		if (timed && !inst) t1 = vkv_time_us();
+		/* push constants and uniform buffers -> default uniform buffers */
+		vkv_feed_uniforms(R, 0, p->vDefaultSize, p->vuni, p->vuniCount, p->vname);
+		if (exact) vkv_feed_uniforms(R, 1, p->fDefaultSizeScissor, p->funiScissor, p->funiScissorCount, p->fname);
+		else vkv_feed_uniforms(R, 1, p->fDefaultSize, p->funi, p->funiCount, p->fname);
 
 		R->sceneDraws++;
+		if (timed && !inst) t2 = vkv_time_us();
 		int r = sceGxmDraw(R->ctx, p->prim, ifmt, indices, drawCount);
+		if (timed && !inst) {
+			uint64_t t3 = vkv_time_us();
+			g_vkv.cur.drawSamples++;
+			g_vkv.cur.drawStateUs += t1 - t0;
+			g_vkv.cur.drawUniformUs += t2 - t1;
+			g_vkv.cur.drawGxmUs += t3 - t2;
+		}
 		if (r < 0) VKV_ERROR("sceGxmDraw failed 0x%08X (pipeline '%s')", (unsigned)r, p->vname);
 		g_vkv.cur.drawCalls++;
 		g_vkv.cur.indices += drawCount;
@@ -437,7 +490,8 @@ void vkv_exec_draw(VkvReplay *R, const VkvCmdDraw *c, bool indexed) {
 void vkv_exec_ff_draw(VkvReplay *R, const VkvCmdFFDraw *c) {
 	if (!R->inScene) return;
 	VkvPipeline *p = c->pipe;
-	R->pipeDirty = true; /* FF pipelines change state behind the app's back */
+	R->pipeDirty = true;
+	R->resDirty = true; /* FF pipelines change state behind the app's back */
 	vkv_apply_pipeline(R, p, 0);
 	vkv_apply_viewport(R, p);
 	sceGxmSetVertexStream(R->ctx, 0, c->vertices);
@@ -453,6 +507,7 @@ void vkv_exec_ff_draw(VkvReplay *R, const VkvCmdFFDraw *c) {
 	g_vkv.cur.ffDraws++;
 	g_vkv.cur.indices += c->count;
 	R->pipeDirty = true;
+	R->resDirty = true;
 }
 
 void vkv_exec_draw_indirect(VkvReplay *R, const VkvCmdDrawIndirect *c) {

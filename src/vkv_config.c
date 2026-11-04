@@ -44,6 +44,7 @@ void vkvGetDefaultConfig(VkvConfig *c) {
 	c->ffFrames           = 3;
 	c->storageArraySize   = 64;
 	c->shaderPackDir      = NULL;
+	c->splash             = 1;
 }
 
 static void vkv_apply_config(const VkvConfig *c) {
@@ -179,6 +180,7 @@ int vkvLoadConfigFile(const char *path) {
 		else if (!strcmp(k, "ff_buffer_kb"))     c.ffVertexBufferSize = strtoul(v, NULL, 0) * 1024;
 		else if (!strcmp(k, "ff_frames"))        c.ffFrames = strtoul(v, NULL, 0);
 		else if (!strcmp(k, "storage_array_size")) c.storageArraySize = strtoul(v, NULL, 0);
+		else if (!strcmp(k, "splash"))           c.splash = strtoul(v, NULL, 0);
 		else VKV_WARN("config: unknown key '%s'", k);
 	}
 	c.logPath = logPath[0] ? logPath : NULL;
@@ -321,9 +323,24 @@ void vkv_stats_frame_end(void) {
 			        (unsigned)s->descriptorBinds, (unsigned)s->clears, (unsigned)s->copies, (unsigned)s->ffDraws,
 			        (unsigned)(s->cdramBytes / 1024), (unsigned)(s->ramBytes / 1024),
 			        (unsigned)s->validationErrors);
+			if (g_vkv.drawSamples)
+				vkv_log(VKV_LOG_INFO, "profile per draw: state=%.2fus uniforms=%.2fus gxmdraw=%.2fus (%u samples), "
+				        "uniform buffers reused %u of %u",
+				        g_vkv.drawStateUs / (float)g_vkv.drawSamples, g_vkv.drawUniformUs / (float)g_vkv.drawSamples,
+				        g_vkv.drawGxmUs / (float)g_vkv.drawSamples, (unsigned)g_vkv.drawSamples,
+				        (unsigned)g_vkv.uniformReuses, (unsigned)(2 * g_vkv.drawsInInterval));
+			g_vkv.drawSamples = 0;
+			g_vkv.uniformReuses = g_vkv.drawsInInterval = 0;
+			g_vkv.drawStateUs = g_vkv.drawUniformUs = g_vkv.drawGxmUs = 0;
 		}
 		g_vkv.intervalStartUs = now;
 		g_vkv.intervalFrames = 0;
 	}
+	g_vkv.drawSamples += c->drawSamples;
+	g_vkv.uniformReuses += c->uniformReuses;
+	g_vkv.drawsInInterval += c->drawCalls;
+	g_vkv.drawStateUs += c->drawStateUs;
+	g_vkv.drawUniformUs += c->drawUniformUs;
+	g_vkv.drawGxmUs += c->drawGxmUs;
 	memset(c, 0, sizeof(*c));
 }
