@@ -113,6 +113,7 @@ The config file also works with an already finished VPK.
 | `ff_buffer_kb=1024` | Streaming buffer size of the fixed function layer per frame |
 | `ff_frames=3` | Frames in flight for the fixed function layer |
 | `splash=1` | Show the boot screen while the app loads, `0` turns it off |
+| `spirv_backend=native` | SPIR-V to Cg translator: `native` (VkVita's own, SPIRV-Cross as fallback), `native_only` or `cross` |
 
 ## Using VkVita
 

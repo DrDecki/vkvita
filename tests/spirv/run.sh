@@ -7,7 +7,7 @@
 # lavapipe (Debian/Ubuntu: glslang-tools spirv-tools libvulkan-dev mesa-vulkan-drivers).
 #   tests/spirv/run.sh                 VkVita's own translator
 #   OPT=-O tests/spirv/run.sh          same on optimized SPIR-V
-#   S2C_MODE= tests/spirv/run.sh       SPIRV-Cross
+#   S2C_MODE=-c tests/spirv/run.sh    SPIRV-Cross
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 export OUT="${OUT:-$HERE/build}"

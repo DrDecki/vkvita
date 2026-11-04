@@ -40,7 +40,7 @@ scenes_per_frame    = 4       # render target hint
 ff_buffer_kb        = 1024    # fixed-function streaming buffer per frame
 ff_frames           = 3       # fixed-function frames in flight
 storage_array_size  = 64      # elements of a runtime array in a read-only storage buffer
-spirv_backend       = cross   # SPIR-V to Cg: cross, native (own translator, SPIRV-Cross as fallback), native_only
+spirv_backend       = native  # SPIR-V to Cg: native (own translator, SPIRV-Cross as fallback), native_only, cross
 splash              = 1       # boot screen until the first present, 0 turns it off
 ```
 
