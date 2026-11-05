@@ -369,6 +369,7 @@ typedef struct VkSampler_T {
 	SceGxmTextureAddrMode  addrU, addrV;
 	uint32_t               maxLevels;
 	uint32_t               lodBias;
+	uint32_t               compare;
 } VkvSampler;
 
 void vkv_texture_apply_sampler(SceGxmTexture *tex, const VkvSampler *s, uint32_t levels);

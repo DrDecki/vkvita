@@ -13,12 +13,10 @@ static void log_cb(VkvSpirvLogLevel level, const char *msg, void *user) {
 
 int main(int argc, char **argv) {
 	int stage = -1, a = 1;
-	if (a < argc && !strcmp(argv[a], "-N")) { vkv_spirv_set_backend(2); a++; }
-	else if (a < argc && !strcmp(argv[a], "-c")) { vkv_spirv_set_backend(0); a++; }
 	if (a < argc && !strcmp(argv[a], "-v")) { stage = VKV_SPIRV_VERTEX; a++; }
 	else if (a < argc && !strcmp(argv[a], "-f")) { stage = VKV_SPIRV_FRAGMENT; a++; }
 	if (a >= argc) {
-		fprintf(stderr, "usage: %s [-N|-c] [-v|-f] shader.spv [out.cg]\n", argv[0]);
+		fprintf(stderr, "usage: %s [-v|-f] shader.spv [out.cg]\n", argv[0]);
 		return 2;
 	}
 	const char *in = argv[a], *outPath = a + 1 < argc ? argv[a + 1] : NULL;

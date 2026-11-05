@@ -19,6 +19,7 @@ typedef struct VkvReplay {
 	uint32_t                  subpass;
 	float                     fbInv[4] __attribute__((aligned(16)));
 	float                     scissorPx[4] __attribute__((aligned(16)));
+	float                     texInfo[2][32][4] __attribute__((aligned(16)));
 	bool                      exactScissor;
 	bool                      fpScissorOn;
 	VkvImage                 *colorImg, *depthImg;

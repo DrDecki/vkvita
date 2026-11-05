@@ -413,7 +413,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateSampler(VkDevice device, const VkSamplerC
 	float maxLod = ci->maxLod < 0.0f ? 0.0f : ci->maxLod;
 	s->maxLevels = maxLod >= (float)VKV_MAX_LEVELS ? VKV_MAX_LEVELS : (uint32_t)maxLod + 1;
 	if (ci->anisotropyEnable) VKV_UNSUPPORTED("anisotropic filtering");
-	if (ci->compareEnable) VKV_UNSUPPORTED("depth compare samplers");
+	s->compare = ci->compareEnable ? (uint32_t)ci->compareOp + 1 : 0;
 	if (ci->minLod > 0.0f) VKV_UNSUPPORTED("sampler minLod");
 	float bias = ci->mipLodBias * 8.0f + 31.0f;
 	s->lodBias = bias <= 0.0f ? 0 : bias >= 63.0f ? 63 : (uint32_t)(bias + 0.5f);

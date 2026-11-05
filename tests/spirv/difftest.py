@@ -6,13 +6,13 @@ SPIR-V from glslang on lavapipe. The candidate translates the same SPIR-V to
 Cg with spirv2cg, parses that Cg as HLSL with glslang, feeds the uniforms the
 way VkVita does (from the reported table) and renders it the same way.
 
-S2C_MODE picks the translator: -N (default) VkVita's own, -c SPIRV-Cross,
-empty for VkVita's own with SPIRV-Cross as fallback. OPT=-O runs spirv-opt on the SPIR-V first.
+OPT=-O runs spirv-opt on the SPIR-V first.
 
 Annotations in the GLSL:
   //@ubo <binding> <words...>   set 0 uniform buffer, words: 1.5 (float), i3 (int), u7 (uint)
   //@pc <words...>              push constants
   //@tex <binding> <pattern>    combined image sampler
+  //@stex <binding> <pattern>   combined image sampler with depth compare (LESS_OR_EQUAL)
   //@img <binding> <pattern>    sampled image
   //@smp <binding>              sampler
 """
@@ -23,7 +23,6 @@ BUILD = os.environ.get('OUT', os.path.join(S, 'build'))
 S2C = os.path.join(BUILD, 'spirv2cg')
 RENDER = os.path.join(BUILD, 'render')
 ENV = dict(os.environ, VK_ICD_FILENAMES='/usr/share/vulkan/icd.d/lvp_icd.json')
-MODE = os.environ.get('S2C_MODE', '-N')
 
 DEFAULT_VERT = """#version 450
 layout(location = 0) in vec2 inPos;
@@ -58,7 +57,7 @@ def annotations(src):
             ubo[int(rest[0])] = ubo.get(int(rest[0]), b'') + words(rest[1:])
         elif kind == 'pc':
             pc += words(rest)
-        elif kind in ('tex', 'img'):
+        elif kind in ('tex', 'img', 'stex'):
             res.append((kind, int(rest[0]), int(rest[1])))
         elif kind == 'smp':
             res.append((kind, int(rest[0]), 0))
@@ -212,14 +211,17 @@ def parse_table(cg):
     return unis, texs
 
 
-def fill_cbuffer(cb, unis, ubo, pc):
+def fill_cbuffer(cb, unis, ubo, pc, texinfo=None):
     size = 16 * max(1, sum(rows * max(count, 1) for _, _, _, rows, _, count in cb))
     buf = bytearray(size)
     for name, ty, reg, rows, comps, count in cb:
         if name not in unis:
             continue  # internal uniforms the test does not feed
         (key, stride, kind) = unis[name]
-        src = pc if key[0] == 'pc' else ubo.get(key[1], b'')
+        if key[0] == 31 and key[1] in (2, 3):
+            src = texinfo or b''
+        else:
+            src = pc if key[0] == 'pc' else ubo.get(key[1], b'')
         off = key[2]
         for k in range(max(count, 1)):
             estride = stride if stride else rows * 16
@@ -280,7 +282,8 @@ def test(fragPath):
 
     cand = {}
     layout2 = []
-    texPattern = {b: p for k, b, p in res if k in ('tex', 'img')}
+    texPattern = {b: p for k, b, p in res if k in ('tex', 'img', 'stex')}
+    compareBinding = {b for k, b, p in res if k == 'stex'}
     for i, st in enumerate(('vert', 'frag')):
         cgp = os.path.join(tmp, 'cand.' + st + '.cg')
         src = ref[st]
@@ -289,7 +292,7 @@ def test(fragPath):
             r = run(['spirv-opt', os.environ['OPT'], ref[st], '-o', src])
             if r.returncode:
                 raise RuntimeError('spirv-opt: ' + r.stderr)
-        args = [S2C] + ([MODE] if MODE else []) + ['-v' if st == 'vert' else '-f', src, cgp]
+        args = [S2C, '-v' if st == 'vert' else '-f', src, cgp]
         r = run(args)
         if r.returncode:
             raise RuntimeError('translate %s: %s' % (st, r.stderr.strip()))
@@ -302,12 +305,17 @@ def test(fragPath):
         r = run(['glslangValidator', '-V', '-D', '-S', st, '-e', 'main', '-o', cand[st], hp])
         if r.returncode:
             raise RuntimeError('hlsl %s: %s' % (st, (r.stdout + r.stderr).strip()[-800:]))
+        # texture info as VkVita feeds it, two entries per unit: (8, 8, 1 level, compare op + 1), (no LOD bias)
+        info = bytearray(512)
+        for unit, b in texUnits.items():
+            info[unit * 32:unit * 32 + 32] = struct.pack('<8f', 8, 8, 1, 4 if b in compareBinding else 0, 0, 1, 1, 0)
         if cb:
             cp = os.path.join(tmp, 'cb%d.bin' % i)
-            open(cp, 'wb').write(fill_cbuffer(cb, unis, ubo, pc))
+            open(cp, 'wb').write(fill_cbuffer(cb, unis, ubo, pc, bytes(info)))
             layout2.append('ubo 1 %d %s' % (i, cp))
         for unit, _ in texs:
-            layout2.append('tex %d %d %d' % (2 + i, unit, texPattern.get(texUnits.get(unit, -1), 0)))
+            b = texUnits.get(unit, -1)
+            layout2.append('%s %d %d %d' % ('ntex' if b in compareBinding else 'tex', 2 + i, unit, texPattern.get(b, 0)))
     b = render(cand['vert'], cand['frag'], layout2, tmp, 'cand')
     diff = max(abs(x - y) for x, y in zip(a, b))
     return diff, a, b

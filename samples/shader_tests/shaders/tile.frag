@@ -52,6 +52,7 @@ layout(set = 0, binding = 9) uniform sampler2D alphaTex;    /* R8 seen as (1, 1,
 layout(set = 0, binding = 10) uniform sampler2D swappedTex; /* RGBA8 seen as BGRA */
 layout(set = 0, binding = 11) uniform sampler2D biasTex;    /* mip levels red, green, blue, white; bias +1 */
 layout(set = 0, binding = 12) uniform sampler2D copyTex;    /* red, with two regions copied in by vkCmdCopyImage */
+layout(set = 0, binding = 14) uniform sampler2DShadow copyShadow; /* the same image with a LESS compare sampler */
 
 layout(std430, set = 0, binding = 13) readonly buffer Query {
     uint samples;   /* written by vkCmdCopyQueryPoolResults */
@@ -100,10 +101,22 @@ void main() {
              near(texture(copyTex, vec2(0.875)), vec4(0.0, 1.0, 0.0, 1.0)) &&
              near(texture(copyTex, vec2(0.125)), vec4(1.0, 0.0, 0.0, 1.0));
     /* an occlusion query around a draw of about 130 pixels */
-    else ok = query.available == 1u && query.samples > 50u && query.samples < 1000u;
+    else if (pc.tile == 18) ok = query.available == 1u && query.samples > 50u && query.samples < 1000u;
+    /* five stripes, left to right: texelFetch, textureSize, textureQueryLevels, textureOffset, depth compare */
+    else {
+        int part = int(vUv.x * 5.0);
+        if (part == 0) ok = near(texelFetch(biasTex, ivec2(1, 1), 1), vec4(0.0, 1.0, 0.0, 1.0));
+        else if (part == 1) ok = textureSize(biasTex, 1) == ivec2(4, 4);
+        else if (part == 2) ok = textureQueryLevels(biasTex) == 4;
+        /* texel (11, 12) is red, one to the right is green */
+        else if (part == 3) ok = near(textureOffset(copyTex, vec2(11.5, 12.5) / 16.0, ivec2(1, 0)), vec4(0.0, 1.0, 0.0, 1.0));
+        /* LESS: 0.5 < 1.0 (red) passes, 0.5 < 0.0 (green) fails */
+        else ok = texture(copyShadow, vec3(0.125, 0.125, 0.5)) > 0.5 && texture(copyShadow, vec3(0.875, 0.875, 0.5)) < 0.5;
+    }
     /* drawn again in red with a scissor that ends left of the tile: nothing may show */
     if (pc.which == 7) ok = false;
-    /* a darker border shows the tiles apart */
+    /* a darker border shows the tiles apart, black gaps the stripes of the last tile */
     float edge = min(min(vUv.x, 1.0 - vUv.x), min(vUv.y, 1.0 - vUv.y)) < 0.04 ? 0.6 : 1.0;
+    if (pc.tile >= 19 && fract(vUv.x * 5.0) > 0.8) edge = 0.0;
     outColor = (ok ? vec4(0.1, 0.85, 0.3, 1.0) : vec4(0.9, 0.15, 0.1, 1.0)) * vec4(vec3(edge), 1.0);
 }
