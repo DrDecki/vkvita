@@ -8,6 +8,8 @@
  *   tex <set> <binding> <pattern>  combined image sampler, 8x8 RGBA8, pattern 0..7
  *   img <set> <binding> <pattern>  sampled image
  *   smp <set> <binding>            sampler (linear)
+ *   stex <set> <binding> <pattern> combined image sampler with depth compare LESS_OR_EQUAL
+ *   ntex <set> <binding> <pattern> combined image sampler, nearest filtering
  *   pc <file>                      push constants (up to 128 bytes)
  * Vertex input: location 0 vec2 position, location 1 vec2 uv.
  */
@@ -176,6 +178,8 @@ int main(int argc, char **argv) {
 		if (sscanf(line, "pc %511s", pcFile) == 1) continue;
 		if (sscanf(line, "ubo %d %d %511s", &r.set, &r.binding, r.file) == 3) strcpy(r.kind, "ubo");
 		else if (sscanf(line, "tex %d %d %d", &r.set, &r.binding, &r.pattern) == 3) strcpy(r.kind, "tex");
+		else if (sscanf(line, "stex %d %d %d", &r.set, &r.binding, &r.pattern) == 3) strcpy(r.kind, "stex");
+		else if (sscanf(line, "ntex %d %d %d", &r.set, &r.binding, &r.pattern) == 3) strcpy(r.kind, "ntex");
 		else if (sscanf(line, "img %d %d %d", &r.set, &r.binding, &r.pattern) == 3) strcpy(r.kind, "img");
 		else if (sscanf(line, "smp %d %d", &r.set, &r.binding) == 2) strcpy(r.kind, "smp");
 		else continue;
@@ -187,8 +191,13 @@ int main(int argc, char **argv) {
 	sci.magFilter = sci.minFilter = VK_FILTER_LINEAR;
 	sci.addressModeU = sci.addressModeV = sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 	sci.maxLod = 0;
-	VkSampler sampler;
+	VkSampler sampler, cmpSampler, nearSampler;
 	CHECK(vkCreateSampler(dev, &sci, NULL, &sampler));
+	sci.magFilter = sci.minFilter = VK_FILTER_NEAREST;
+	CHECK(vkCreateSampler(dev, &sci, NULL, &nearSampler));
+	sci.compareEnable = VK_TRUE;
+	sci.compareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+	CHECK(vkCreateSampler(dev, &sci, NULL, &cmpSampler));
 
 	enum { SETS = 4 };
 	VkDescriptorSetLayout dsl[SETS];
@@ -198,7 +207,7 @@ int main(int argc, char **argv) {
 		for (int i = 0; i < resCount; i++) {
 			if (res[i].set != s) continue;
 			VkDescriptorType ty = !strcmp(res[i].kind, "ubo") ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
-			                    : !strcmp(res[i].kind, "tex") ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+			                    : !strcmp(res[i].kind, "tex") || !strcmp(res[i].kind, "stex") || !strcmp(res[i].kind, "ntex") ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
 			                    : !strcmp(res[i].kind, "img") ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_SAMPLER;
 			b[bc++] = (VkDescriptorSetLayoutBinding){ (uint32_t)res[i].binding, ty, 1, VK_SHADER_STAGE_ALL_GRAPHICS, NULL };
 		}
@@ -233,10 +242,10 @@ int main(int argc, char **argv) {
 			w.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 			w.pBufferInfo = &bi;
 		} else {
-			ii.sampler = sampler;
+			ii.sampler = !strcmp(res[i].kind, "stex") ? cmpSampler : !strcmp(res[i].kind, "ntex") ? nearSampler : sampler;
 			ii.imageView = !strcmp(res[i].kind, "smp") ? VK_NULL_HANDLE : texture(res[i].pattern);
 			ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			w.descriptorType = !strcmp(res[i].kind, "tex") ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+			w.descriptorType = !strcmp(res[i].kind, "tex") || !strcmp(res[i].kind, "stex") || !strcmp(res[i].kind, "ntex") ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
 			                 : !strcmp(res[i].kind, "img") ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_SAMPLER;
 			w.pImageInfo = &ii;
 		}

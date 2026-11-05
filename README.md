@@ -39,7 +39,7 @@ These CMake options are available:
 | Option | Description |
 |---|---|
 | `VKV_WITH_SHARK=AUTO` | Runtime Cg compiler through vitaShaRK. `AUTO` uses it if it's installed, `ON` requires it, `OFF` removes it |
-| `VKV_WITH_SPIRV=ON` | SPIR-V support: VkVita's own SPIR-V to Cg translator, with the bundled SPIRV-Cross as fallback. SPIRV-Cross adds about 850 KB of code and needs `-lstdc++` |
+| `VKV_WITH_SPIRV=ON` | SPIR-V support: the SPIR-V to Cg translator |
 | `VKV_ENABLE_DEBUG=ON` | Compiles in logging, validation and profiling. `OFF` removes them for release builds |
 | `VKV_BUILD_SAMPLES=ON` | Builds the sample VPKs |
 | `VKV_INSTALL_VULKAN_HEADERS=ON` | Installs the bundled Khronos Vulkan headers |
@@ -49,12 +49,10 @@ If you cloned without `--recursive`, run `git submodule update --init` once.
 
 ### Third-party code
 
-Both are git submodules in `third_party/`:
-
-| Library | Version |
-|---|---|
-| [Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers) | upstream commit `73814d0` (`VK_HEADER_VERSION` 366) |
-| [SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross) | upstream commit `57e4efc` |
+| Library | Where | Version |
+|---|---|---|
+| [Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers) | git submodule in `third_party/Vulkan-Headers` | upstream commit `73814d0` (`VK_HEADER_VERSION` 366) |
+| [SPIR-V headers](https://github.com/KhronosGroup/SPIRV-Headers) (`spirv.h`, `GLSL.std.450.h`) | copied into `third_party/spirv` | SPIR-V 1.6 |
 
 Everything below can be changed at runtime without rebuilding, either in code (`vkvSetConfig`, `vkvSetDebugFlags`, `vkvSetCompatFlags`) or by creating `ux0:data/vkvita/config.txt` on the console:
 
@@ -113,7 +111,6 @@ The config file also works with an already finished VPK.
 | `ff_buffer_kb=1024` | Streaming buffer size of the fixed function layer per frame |
 | `ff_frames=3` | Frames in flight for the fixed function layer |
 | `splash=1` | Show the boot screen while the app loads, `0` turns it off |
-| `spirv_backend=native` | SPIR-V to Cg translator: `native` (VkVita's own, SPIRV-Cross as fallback), `native_only` or `cross` |
 
 ## Using VkVita
 
@@ -178,4 +175,4 @@ Samples can be found in the `samples` folder.
 
 ## License
 
-VkVita is licensed under the GPL 3.0 (or any later version), see `LICENSE`. The bundled Vulkan headers are Apache 2.0 or MIT, SPIRV-Cross is Apache 2.0, and vitaShaRK is LGPL 3.0.
+VkVita is licensed under the GPL 3.0 (or any later version), see `LICENSE`. The bundled Vulkan headers are Apache 2.0 or MIT, the SPIR-V headers are MIT, and vitaShaRK is LGPL 3.0.

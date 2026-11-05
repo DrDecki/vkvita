@@ -69,8 +69,6 @@ typedef struct VkvConfig {
 	uint32_t       storageArraySize;   /* elements of a runtime array in a read-only storage buffer, default 64 */
 	const char    *shaderPackDir;      /* read-only GXP cache shipped with the app, e.g. "app0:shaders"; NULL = none */
 	uint32_t       splash;             /* 1 = vkCreateInstance shows the boot screen until the first present, default 1 */
-	uint32_t       spirvBackend;       /* SPIR-V to Cg: 1 = VkVita's own translator with SPIRV-Cross for what it
-	                                      can't do yet (default), 2 = only VkVita's own, 0 = only SPIRV-Cross */
 } VkvConfig;
 
 void     vkvGetDefaultConfig(VkvConfig *config);

@@ -23,6 +23,8 @@ typedef struct VkvReplay {
 	uint32_t                  subpass;
 	float                     fbInv[4] __attribute__((aligned(16))); /* 1 / framebuffer size */
 	float                     scissorPx[4] __attribute__((aligned(16))); /* exact scissor x0, y0, x1, y1 */
+	/* per stage, two per texture unit: (width, height, mip levels, depth compare op + 1), (LOD bias, 0, 0, 0) */
+	float                     texInfo[2][32][4] __attribute__((aligned(16)));
 	bool                      exactScissor;   /* the scissor is not on 32x32 tiles */
 	bool                      fpScissorOn;    /* the scissor variant of the fragment program is set */
 	VkvImage                 *colorImg, *depthImg;

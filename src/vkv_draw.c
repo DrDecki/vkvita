@@ -121,6 +121,10 @@ static void vkv_apply_viewport(VkvReplay *R, const VkvPipeline *p) {
 
 static const uint8_t *vkv_uniform_buffer_data(VkvReplay *R, int set, uint32_t binding, uint32_t *range) {
 	if (set == VKV_INTERNAL_SET) {
+		if (binding == 2 || binding == 3) {
+			*range = sizeof(R->texInfo[0]);
+			return (const uint8_t *)R->texInfo[binding == 2 ? VKV_STAGE_VERTEX : VKV_STAGE_FRAGMENT];
+		}
 		if (binding == 1) {
 			*range = sizeof(R->scissorPx);
 			return (const uint8_t *)R->scissorPx;
@@ -246,21 +250,43 @@ static VkvDescriptor *vkv_find_descriptor(VkvReplay *R, int set, uint32_t bindin
 }
 
 /* Builds the texture for one explicit texture unit from its image and sampler descriptors. */
-static bool vkv_resolve_texture(VkvReplay *R, const VkvTexBinding *t, SceGxmTexture *out) {
+/* Size, mip levels and depth compare op of a bound texture, for shaders that
+ * fetch texels, query sizes or compare depth themselves. */
+static void vkv_texture_info(const VkvImageView *v, const VkvSampler *s, float *info) {
+	uint32_t w = v ? v->image->width >> v->baseLevel : 1, h = v ? v->image->height >> v->baseLevel : 1;
+	info[0] = (float)(w ? w : 1);
+	info[1] = (float)(h ? h : 1);
+	info[2] = (float)(v ? v->levelCount : 1);
+	info[3] = (float)(s ? s->compare : 0);
+	info[4] = s ? ((float)s->lodBias - 31.0f) / 8.0f : 0.0f;
+	/* depth compare as weights for (ref < depth, ref == depth, ref > depth); LESS_OR_EQUAL without compare */
+	static const float k_cmp[8][3] = { { 0, 0, 0 }, { 1, 0, 0 }, { 0, 1, 0 }, { 1, 1, 0 },
+	                                   { 0, 0, 1 }, { 1, 0, 1 }, { 0, 1, 1 }, { 1, 1, 1 } };
+	uint32_t op = s && s->compare ? s->compare - 1 : 3;
+	info[5] = k_cmp[op & 7][0];
+	info[6] = k_cmp[op & 7][1];
+	info[7] = k_cmp[op & 7][2];
+}
+
+static bool vkv_resolve_texture(VkvReplay *R, const VkvTexBinding *t, SceGxmTexture *out, float *info) {
 	VkvDescriptor *img = vkv_find_descriptor(R, t->imageSet, t->imageBinding, t->imageElement);
 	if (!img || !img->valid) return false;
 	if (img->view) img->view->image->readSerial = R->dev->sceneSerial + 1; /* the scene being recorded */
 	if (img->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER || img->type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT) {
 		*out = img->tex;
+		vkv_texture_info(img->view, img->sampler, info);
 		return true;
 	}
 	if (img->type != VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE || !img->view) return false;
 	*out = img->view->tex;
+	const VkvSampler *smp = NULL;
 	if (t->samplerSet >= 0) {
 		VkvDescriptor *sd = vkv_find_descriptor(R, t->samplerSet, t->samplerBinding, t->samplerElement);
 		if (!sd || !sd->sampler) return false;
+		smp = sd->sampler;
 		vkv_texture_apply_sampler(out, sd->sampler, img->view->levelCount);
 	}
+	vkv_texture_info(img->view, smp, info);
 	return true;
 }
 
@@ -306,7 +332,8 @@ static void vkv_bind_resources(VkvReplay *R, const VkvPipeline *p) {
 		for (uint32_t i = 0; i < p->texCount[st]; i++) {
 			const VkvTexBinding *t = &p->texb[st][i];
 			SceGxmTexture tex;
-			if (!vkv_resolve_texture(R, t, &tex)) {
+			float *info = R->texInfo[st][(t->unit & 15) * 2];
+			if (!vkv_resolve_texture(R, t, &tex, info)) {
 				if (vkv_validate())
 					vkv_fail("draw", "pipeline '%s/%s': texture unit %u needs the image at set %d binding %u%s", p->vname,
 					         p->fname, (unsigned)t->unit, (int)t->imageSet, (unsigned)t->imageBinding,

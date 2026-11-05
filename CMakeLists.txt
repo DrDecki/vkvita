@@ -9,10 +9,9 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
   endif()
 endif()
 
-project(VkVita VERSION 0.1.0 LANGUAGES C CXX)
+project(VkVita VERSION 0.1.0 LANGUAGES C)
 
-if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/Vulkan-Headers/include/vulkan/vulkan.h OR
-   NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/SPIRV-Cross/spirv_cross.cpp)
+if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/Vulkan-Headers/include/vulkan/vulkan.h)
   message(FATAL_ERROR "The submodules are missing. Run: git submodule update --init")
 endif()
 
@@ -31,7 +30,7 @@ endif()
 option(VKV_BUILD_SAMPLES "Build the sample VPKs" ON)
 option(VKV_ENABLE_DEBUG "Compile in logging, validation and profiling (toggled at runtime)" ON)
 option(VKV_INSTALL_VULKAN_HEADERS "Install the bundled Khronos Vulkan headers" ON)
-option(VKV_WITH_SPIRV "Translate SPIR-V shaders to Cg at runtime (bundled SPIRV-Cross)" ON)
+option(VKV_WITH_SPIRV "Translate SPIR-V shaders to Cg at runtime" ON)
 set(VKV_WITH_SHARK "AUTO" CACHE STRING "Runtime Cg compiler via vitaShaRK: AUTO, ON or OFF")
 set_property(CACHE VKV_WITH_SHARK PROPERTY STRINGS AUTO ON OFF)
 set(VKV_DEFAULT_DEBUG_FLAGS "" CACHE STRING "Default VkvDebugFlags bits (number); empty = library default")
@@ -90,22 +89,9 @@ add_library(vkvita STATIC
 add_library(VkVita::vkvita ALIAS vkvita)
 
 if(VKV_WITH_SPIRV)
-  set(VKV_SPIRV_CROSS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/SPIRV-Cross)
-  set(VKV_SPIRV_CROSS_SOURCES
-    ${VKV_SPIRV_CROSS_DIR}/spirv_cfg.cpp
-    ${VKV_SPIRV_CROSS_DIR}/spirv_cross.cpp
-    ${VKV_SPIRV_CROSS_DIR}/spirv_cross_c.cpp
-    ${VKV_SPIRV_CROSS_DIR}/spirv_cross_parsed_ir.cpp
-    ${VKV_SPIRV_CROSS_DIR}/spirv_glsl.cpp
-    ${VKV_SPIRV_CROSS_DIR}/spirv_hlsl.cpp
-    ${VKV_SPIRV_CROSS_DIR}/spirv_parser.cpp
-  )
-  target_sources(vkvita PRIVATE src/vkv_spirv.c src/vkv_spirv_lower.c src/vkv_spirv_cg.c ${VKV_SPIRV_CROSS_SOURCES})
-  set_source_files_properties(${VKV_SPIRV_CROSS_SOURCES} PROPERTIES COMPILE_OPTIONS "-Os;-w")
+  target_sources(vkvita PRIVATE src/vkv_spirv.c src/vkv_spirv_lower.c src/vkv_spirv_cg.c)
   set_source_files_properties(src/vkv_spirv.c src/vkv_spirv_lower.c src/vkv_spirv_cg.c PROPERTIES COMPILE_OPTIONS "-Os")
-  target_include_directories(vkvita PRIVATE ${VKV_SPIRV_CROSS_DIR})
-  target_compile_definitions(vkvita PRIVATE SPIRV_CROSS_C_API_GLSL=1 SPIRV_CROSS_C_API_HLSL=1)
-  target_compile_features(vkvita PRIVATE cxx_std_11)
+  target_include_directories(vkvita PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/spirv)
 endif()
 
 target_include_directories(vkvita PUBLIC
@@ -131,9 +117,6 @@ endif()
 set(VKV_LINK_LIBS)
 if(VKV_SHARK)
   list(APPEND VKV_LINK_LIBS vitashark SceShaccCgExt taihen_stub SceShaccCg_stub)
-endif()
-if(VKV_WITH_SPIRV)
-  list(APPEND VKV_LINK_LIBS stdc++ pthread)
 endif()
 list(APPEND VKV_LINK_LIBS
   SceGxm_stub SceDisplay_stub SceSysmem_stub SceIofilemgr_stub SceKernelThreadMgr_stub SceLibKernel_stub m)

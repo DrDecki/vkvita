@@ -1,5 +1,5 @@
 /*
- * VkVita: direct SPIR-V to Cg translation, without SPIRV-Cross.
+ * VkVita: SPIR-V to Cg translation.
  *
  * Every SPIR-V value becomes a temporary declared at the top of its
  * function, structured control flow becomes if/else and for(;;) loops, and
@@ -21,7 +21,7 @@
 #include "GLSL.std.450.h"
 
 /* Return codes of vkv_spirv_translate_native: 0 ok, -1 the shader cannot run
- * on GXM, -2 the shader uses something this translator does not handle yet. */
+ * on GXM, -2 the shader uses something this translator does not handle. */
 #define TR_OK          0
 #define TR_FAIL       -1
 #define TR_UNSUPPORTED -2
@@ -122,6 +122,8 @@ typedef struct Id {
 	int32_t         samplerRef; /* sampled image value: index into Tr.samplers, -1 none */
 	uint32_t        samplerElem; /* id of the element index, 0 = element 0 */
 	bool            isConstExpr;
+	bool            inl;         /* written into its only use instead of a temporary */
+	uint16_t        uses;
 } Id;
 
 typedef struct Block {
@@ -156,7 +158,7 @@ typedef struct Smp {
 typedef struct Io {
 	uint32_t var;
 	uint32_t member;     /* member of a builtin block, ~0u for a plain variable */
-	char     name[96];   /* static copy in Cg */
+	char     name[160];  /* static copy in Cg */
 	char     type[32];
 	char     sem[24];
 	bool     isInt, frontFacing, isOutput;
@@ -164,6 +166,7 @@ typedef struct Io {
 } Io;
 
 #define MAX_SAMPLERS 16
+#define NO_SAMPLER   0xFFFFFFFFu /* samplerVar of an image used without a sampler (texelFetch, size queries) */
 #define MAX_IO       32
 #define MAX_LOOPS    32
 
@@ -196,6 +199,8 @@ typedef struct Tr {
 	VkvSpirvStride  strides[64];
 	uint32_t        strideCount;
 	bool            pointSize;
+	bool            texInfo;      /* uses vkv_texinfo (texture sizes, mip levels, compare ops) */
+	bool            needCompare;  /* uses vkv_compare (depth compare in the shader) */
 	/* function being emitted */
 	Func           *fn;
 	Loop            loops[MAX_LOOPS];
@@ -228,7 +233,7 @@ static void fail(Tr *t, const char *fmt, ...) {
 	if (t->log) t->log(VKV_SPIRV_LOG_ERROR, msg, t->user);
 }
 
-/* Something a later version could handle: the caller may fall back. */
+/* Something the translator does not handle (yet). */
 static void unsupported(Tr *t, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 static void unsupported(Tr *t, const char *fmt, ...) {
 	char msg[512];
@@ -237,7 +242,7 @@ static void unsupported(Tr *t, const char *fmt, ...) {
 	vsnprintf(msg, sizeof(msg), fmt, ap);
 	va_end(ap);
 	if (t->status == TR_OK) t->status = TR_UNSUPPORTED;
-	if (t->log) t->log(VKV_SPIRV_LOG_WARN, msg, t->user);
+	if (t->log) t->log(VKV_SPIRV_LOG_ERROR, msg, t->user);
 }
 
 static inline uint32_t op_of(const uint32_t *w) { return w[0] & 0xFFFFu; }
@@ -938,7 +943,7 @@ static int32_t add_combo(Tr *t, uint32_t imageVar, uint32_t samplerVar, uint32_t
 	int32_t have = find_combo(t, imageVar, samplerVar);
 	if (have >= 0) return have;
 	uint32_t images = var_array_len(t, imageVar);
-	uint32_t samplers = samplerVar ? var_array_len(t, samplerVar) : 1;
+	uint32_t samplers = samplerVar && samplerVar != NO_SAMPLER ? var_array_len(t, samplerVar) : 1;
 	if (!images || !samplers) { fail(t, "texture arrays need one fixed size"); return -1; }
 	uint32_t count = images > samplers ? images : samplers;
 	const char *ct = sampler_type(t, var_elem_type(t, imageVar));
@@ -958,13 +963,17 @@ static int32_t add_combo(Tr *t, uint32_t imageVar, uint32_t samplerVar, uint32_t
 		if (samplerVar) {
 			if (count > 1) snprintf(s->name, sizeof(s->name), "vkv_tex%u_%u", comboIndex, k);
 			else snprintf(s->name, sizeof(s->name), "vkv_tex%u", comboIndex);
-			Id *sv = id_at(t, samplerVar);
 			s->t.imageSet = iv->set;
 			s->t.imageBinding = (uint32_t)iv->binding;
 			s->t.imageElement = images > 1 ? k : 0;
-			s->t.samplerSet = sv->set;
-			s->t.samplerBinding = (uint32_t)sv->binding;
-			s->t.samplerElement = samplers > 1 ? k : 0;
+			if (samplerVar == NO_SAMPLER) {
+				s->t.samplerSet = -2;
+			} else {
+				Id *sv = id_at(t, samplerVar);
+				s->t.samplerSet = sv->set;
+				s->t.samplerBinding = (uint32_t)sv->binding;
+				s->t.samplerElement = samplers > 1 ? k : 0;
+			}
 		} else {
 			char base[64];
 			if (iv->name && iv->name[0]) clean_name(iv->name, base, sizeof(base));
@@ -982,7 +991,7 @@ static int32_t add_combo(Tr *t, uint32_t imageVar, uint32_t samplerVar, uint32_t
 }
 
 /* Finds every texture the entry point can sample: image/sampler pairs from
- * OpSampledImage first (like SPIRV-Cross did), then combined samplers. */
+ * OpSampledImage first, then combined samplers. */
 static void collect_samplers(Tr *t) {
 	uint32_t combos = 0;
 	for (const uint32_t *w = t->words + 5; w < t->words + t->count; w += wc_of(w)) {
@@ -991,6 +1000,19 @@ static void collect_samplers(Tr *t) {
 		uint32_t iv = trace_resource(t, w[3], &ie), sv = trace_resource(t, w[4], &se);
 		if (!iv || !sv) { unsupported(t, "could not find the image or sampler of a texture access"); continue; }
 		if (find_combo(t, iv, sv) < 0) add_combo(t, iv, sv, combos++);
+	}
+	/* images read without a sampler: texelFetch and size queries on a texture2D */
+	for (const uint32_t *w = t->words + 5; w < t->words + t->count; w += wc_of(w)) {
+		uint32_t op = op_of(w);
+		if (op != SpvOpImageFetch && op != SpvOpImageQuerySizeLod && op != SpvOpImageQuerySize &&
+		    op != SpvOpImageQueryLevels)
+			continue;
+		if (def_op(t, w[3]) == SpvOpImage) continue; /* taken from a sampled image */
+		uint32_t e;
+		uint32_t iv = trace_resource(t, w[3], &e);
+		if (!iv) { unsupported(t, "could not find the image of a texel fetch or size query"); continue; }
+		if (def_op(t, var_elem_type(t, iv)) == SpvOpTypeSampledImage) continue;
+		if (find_combo(t, iv, NO_SAMPLER) < 0) add_combo(t, iv, NO_SAMPLER, combos++);
 	}
 	for (const uint32_t *w = t->words + 5; w < t->words + t->count; w += wc_of(w)) {
 		if (op_of(w) != SpvOpVariable || w[3] != SpvStorageClassUniformConstant) continue;
@@ -1133,7 +1155,37 @@ static void declare_io(Tr *t, uint32_t var, bool output) {
 		/* gl_PerVertex: one static per written built-in member */
 		Id *s = id_at(t, ty);
 		bool builtinBlock = s->memCount && s->mem[0].builtin >= 0;
-		if (!builtinBlock) { unsupported(t, "interface blocks other than gl_PerVertex are not supported"); return; }
+		if (!builtinBlock) {
+			/* a user interface block: every member is its own varying */
+			int32_t loc = v->location;
+			char bn[64];
+			if (v->name && v->name[0]) clean_name(v->name, bn, sizeof(bn));
+			else snprintf(bn, sizeof(bn), "blk");
+			for (uint32_t m = 0; m < wc_of(td) - 2; m++) {
+				uint32_t mt = td[2 + m];
+				uint32_t mop = def_op(t, mt);
+				if (mop == SpvOpTypeArray || mop == SpvOpTypeMatrix || mop == SpvOpTypeStruct) {
+					fail(t, "arrays, matrices and structs inside interface blocks are not supported");
+					return;
+				}
+				Io *io = new_io(t);
+				if (!io) return;
+				io->var = var;
+				io->member = m;
+				io->isOutput = output;
+				char mn[64];
+				if (m < s->memCount && s->mem[m].name && s->mem[m].name[0]) clean_name(s->mem[m].name, mn, sizeof(mn));
+				else snprintf(mn, sizeof(mn), "m%u", m);
+				snprintf(io->name, sizeof(io->name), "%s_%s_%u", bn, mn, var);
+				int32_t ml = m < s->memCount && s->mem[m].location >= 0 ? s->mem[m].location : loc < 0 ? -1 : loc + (int32_t)m;
+				if (!io_semantic(t, io, -1, ml, output, io->name)) return;
+				finish_io_type(t, io, mt);
+				char st[32];
+				type_str(t, mt, st, sizeof(st));
+				sb_printf(&t->globals, "static %s %s;\n", st, io->name);
+			}
+			return;
+		}
 		for (uint32_t m = 0; m < wc_of(td) - 2; m++) {
 			if (!output || !member_written(t, var, m)) continue;
 			if (s->mem[m].builtin == SpvBuiltInClipDistance || s->mem[m].builtin == SpvBuiltInCullDistance) {
@@ -1260,10 +1312,10 @@ static char *ptr_expr(Tr *t, uint32_t ptr) {
 			snprintf(base, sizeof(base), "%s_%s", bv->expr ? bv->expr : "ub", mn);
 			return chain_expr(t, base, def_of(t, baseType)[2 + m], idx + 1, n - 1);
 		}
-		/* gl_PerVertex outputs */
+		/* gl_PerVertex and other interface blocks: each member is a static of its own */
 		const uint32_t *bd = def_of(t, baseId);
-		if (bd && op_of(bd) == SpvOpVariable && def_op(t, baseType) == SpvOpTypeStruct && id_at(t, baseType)->memCount &&
-		    id_at(t, baseType)->mem[0].builtin >= 0) {
+		if (bd && op_of(bd) == SpvOpVariable && (bd[3] == SpvStorageClassInput || bd[3] == SpvStorageClassOutput) &&
+		    def_op(t, baseType) == SpvOpTypeStruct) {
 			uint32_t m;
 			if (!const_u32(t, idx[0], &m)) { fail(t, "dynamic gl_PerVertex index"); return xstrdup("0"); }
 			for (uint32_t i = 0; i < t->ioCount; i++)
@@ -1309,6 +1361,13 @@ static void emit_assign(Tr *t, uint32_t res, const char *fmt, ...) {
 	va_start(ap, fmt);
 	vsnprintf(rhs, (size_t)n + 1, fmt, ap);
 	va_end(ap);
+	Id *e = id_at(t, res);
+	if (e && e->inl) {
+		free(e->expr);
+		e->expr = xprintf("(%s)", rhs);
+		free(rhs);
+		return;
+	}
 	ind(t);
 	sb_printf(t->out, "%s = %s;\n", val(t, res), rhs);
 	free(rhs);
@@ -1339,25 +1398,42 @@ static const char *binop_sym(uint32_t op) {
 	}
 }
 
-/* Picks the sampler a sampled image value refers to; a dynamic index becomes a chain of ?: around the call. */
-static void sample_call(Tr *t, uint32_t res, uint32_t sampledImage, const char *fn, const char *args) {
+/* The texture info uniform, two entries per texture unit: (width, height, mip
+ * levels, compare op + 1) and (LOD bias, weights for less, equal and greater
+ * of the depth compare). Declared on first use. */
+static void use_texinfo(Tr *t) { t->texInfo = true; }
+
+/* Writes `tmpl` once per element of the sampler array behind `sampledImage`,
+ * with $S replaced by the sampler name, $U by the index of its size entry in
+ * vkv_texinfo and $V by the index of its LOD bias entry. A dynamic
+ * index picks the element in a chain of ?:. */
+static char *per_sampler(Tr *t, uint32_t sampledImage, const char *tmpl) {
 	Id *si = id_at(t, sampledImage);
-	if (si->samplerRef < 0) { unsupported(t, "texture access through an unknown sampler"); return; }
+	if (!si || si->samplerRef < 0) { unsupported(t, "texture access through an unknown sampler"); return NULL; }
 	const Smp *s0 = &t->samplers[si->samplerRef];
-	uint32_t cv = 0;
-	if (s0->count <= 1 || !si->samplerElem || const_u32(t, si->samplerElem, &cv)) {
-		if (cv >= s0->count) cv = 0;
-		emit_assign(t, res, "%s(%s, %s)", fn, t->samplers[s0->first + cv].name, args);
-		return;
-	}
+	uint32_t cv = 0, first = 0, last = s0->count;
+	bool dynamic = s0->count > 1 && si->samplerElem && !const_u32(t, si->samplerElem, &cv);
+	if (!dynamic) { if (cv >= s0->count) cv = 0; first = cv; last = cv + 1; }
 	Sb b = { 0 };
-	for (uint32_t k = 0; k < s0->count; k++) {
-		if (k + 1 < s0->count) sb_printf(&b, "(%s) == %u ? ", val(t, si->samplerElem), (unsigned)k);
-		sb_printf(&b, "%s(%s, %s)", fn, t->samplers[s0->first + k].name, args);
-		if (k + 1 < s0->count) sb_puts(&b, " : ");
+	if (dynamic) sb_puts(&b, "(");
+	for (uint32_t k = first; k < last; k++) {
+		const Smp *sk = &t->samplers[s0->first + k];
+		if (dynamic && k + 1 < last) sb_printf(&b, "(%s) == %u ? ", val(t, si->samplerElem), (unsigned)k);
+		for (const char *p = tmpl; *p; p++) {
+			if (p[0] == '$' && p[1] == 'S') { sb_puts(&b, sk->name); p++; }
+			else if (p[0] == '$' && p[1] == 'U') { sb_printf(&b, "%u", (unsigned)sk->t.unit * 2); p++; }
+			else if (p[0] == '$' && p[1] == 'V') { sb_printf(&b, "%u", (unsigned)sk->t.unit * 2 + 1); p++; }
+			else sb_add(&b, p, 1);
+		}
+		if (dynamic && k + 1 < last) sb_puts(&b, " : ");
 	}
-	emit_assign(t, res, "(%s)", b.p ? b.p : "0");
-	free(b.p);
+	if (dynamic) sb_puts(&b, ")");
+	return sb_take(&b);
+}
+
+static const Smp *sampler_of(Tr *t, uint32_t sampledImage) {
+	Id *si = id_at(t, sampledImage);
+	return si && si->samplerRef >= 0 ? &t->samplers[si->samplerRef] : NULL;
 }
 
 static const char *tex_fn(const Smp *s, const char *kind) {
@@ -1368,60 +1444,127 @@ static const char *tex_fn(const Smp *s, const char *kind) {
 	return buf;
 }
 
+static uint32_t coord_need(const Smp *s) {
+	return !strcmp(s->cgType, "sampler1D") ? 1 : !strcmp(s->cgType, "samplerCUBE") || !strcmp(s->cgType, "sampler3D") ? 3 : 2;
+}
+
+/* The image operands that follow a texture instruction. */
+typedef struct ImgOps { uint32_t bias, lod, gx, gy, offset; bool bad; } ImgOps;
+
+static ImgOps image_operands(Tr *t, const uint32_t *w, uint32_t at) {
+	ImgOps o = { 0 };
+	uint32_t wc = wc_of(w), mask = at < wc ? w[at++] : 0;
+	if (mask & SpvImageOperandsBiasMask) o.bias = w[at++];
+	if (mask & SpvImageOperandsLodMask) o.lod = w[at++];
+	if (mask & SpvImageOperandsGradMask) { o.gx = w[at++]; o.gy = w[at++]; }
+	if (mask & SpvImageOperandsConstOffsetMask) o.offset = w[at++];
+	if (mask & SpvImageOperandsOffsetMask) o.offset = w[at++];
+	if (mask & ~(SpvImageOperandsBiasMask | SpvImageOperandsLodMask | SpvImageOperandsGradMask |
+	             SpvImageOperandsConstOffsetMask | SpvImageOperandsOffsetMask)) {
+		unsupported(t, "image operands 0x%x are not supported", mask);
+		o.bad = true;
+	}
+	return o;
+}
+
 static void emit_image_sample(Tr *t, const uint32_t *w) {
-	uint32_t op = op_of(w), wc = wc_of(w);
+	uint32_t op = op_of(w);
 	uint32_t res = w[2], si = w[3], coord = w[4];
-	Id *sie = id_at(t, si);
-	if (!sie || sie->samplerRef < 0) { unsupported(t, "texture access through an unknown sampler"); return; }
-	const Smp *s = &t->samplers[sie->samplerRef];
-	if (!is_float_type(t, w[1])) { unsupported(t, "integer textures are not supported"); return; }
-	bool proj = op == SpvOpImageSampleProjImplicitLod || op == SpvOpImageSampleProjExplicitLod;
-	uint32_t mask = 0, ai = 5;
-	if (op == SpvOpImageSampleDrefImplicitLod || op == SpvOpImageSampleDrefExplicitLod ||
-	    op == SpvOpImageSampleProjDrefImplicitLod || op == SpvOpImageSampleProjDrefExplicitLod) {
-		unsupported(t, "depth comparison sampling is not supported");
-		return;
-	}
-	if (wc > ai) mask = w[ai++];
-	uint32_t bias = 0, lod = 0, gx = 0, gy = 0;
-	if (mask & SpvImageOperandsBiasMask) bias = w[ai++];
-	if (mask & SpvImageOperandsLodMask) lod = w[ai++];
-	if (mask & SpvImageOperandsGradMask) { gx = w[ai++]; gy = w[ai++]; }
-	if (mask & ~(SpvImageOperandsBiasMask | SpvImageOperandsLodMask | SpvImageOperandsGradMask)) {
-		unsupported(t, "texture offsets and other image operands are not supported");
-		return;
-	}
-	const char *c = val(t, coord);
+	const Smp *s = sampler_of(t, si);
+	if (!s) { unsupported(t, "texture access through an unknown sampler"); return; }
+	bool proj = op == SpvOpImageSampleProjImplicitLod || op == SpvOpImageSampleProjExplicitLod ||
+	            op == SpvOpImageSampleProjDrefImplicitLod || op == SpvOpImageSampleProjDrefExplicitLod;
+	bool dref = op == SpvOpImageSampleDrefImplicitLod || op == SpvOpImageSampleDrefExplicitLod ||
+	            op == SpvOpImageSampleProjDrefImplicitLod || op == SpvOpImageSampleProjDrefExplicitLod;
+	if (!dref && !is_float_type(t, w[1])) { fail(t, "integer textures are not supported on GXM"); return; }
+	ImgOps o = image_operands(t, w, dref ? 6 : 5);
+	if (o.bad) return;
+	uint32_t need = coord_need(s);
 	uint32_t cn = vec_size(t, id_at(t, coord)->type);
-	char args[512];
-	bool cube = !strcmp(s->cgType, "samplerCUBE");
-	uint32_t need = !strcmp(s->cgType, "sampler1D") ? 1 : cube || !strcmp(s->cgType, "sampler3D") ? 3 : 2;
-	char cc[160];
-	if (cn > need && !proj) snprintf(cc, sizeof(cc), "%s.%.*s", c, (int)need, k_swz);
+	const char *c = val(t, coord);
+	char cc[600];
+	/* projective coordinates are divided here, the depth reference stays separate */
+	if (proj) snprintf(cc, sizeof(cc), "(%s.%.*s / %s.%c)", c, (int)need, k_swz, c, k_swz[cn - 1]);
+	else if (cn > need) snprintf(cc, sizeof(cc), "%s.%.*s", c, (int)need, k_swz);
 	else snprintf(cc, sizeof(cc), "%s", c);
-	if (proj) {
-		if (bias || lod || gx) { unsupported(t, "projective sampling with lod or bias"); return; }
-		/* tex2Dproj divides by the last component */
-		if (cn == need + 1) snprintf(args, sizeof(args), "%s", c);
-		else snprintf(args, sizeof(args), "float%u(%s.%.*s, %s.w)", need + 1, c, (int)need, k_swz, c);
-		sample_call(t, res, si, tex_fn(s, "proj"), args);
-	} else if (lod) {
-		if (need == 3) snprintf(args, sizeof(args), "float4(%s, %s)", cc, val(t, lod));
-		else if (need == 2) snprintf(args, sizeof(args), "float4(%s, 0.0f, %s)", cc, val(t, lod));
-		else snprintf(args, sizeof(args), "float4(%s, 0.0f, 0.0f, %s)", cc, val(t, lod));
-		sample_call(t, res, si, tex_fn(s, "lod"), args);
-	} else if (bias) {
-		if (need == 3) snprintf(args, sizeof(args), "float4(%s, %s)", cc, val(t, bias));
-		else if (need == 2) snprintf(args, sizeof(args), "float4(%s, 0.0f, %s)", cc, val(t, bias));
-		else snprintf(args, sizeof(args), "float4(%s, 0.0f, 0.0f, %s)", cc, val(t, bias));
-		sample_call(t, res, si, tex_fn(s, "bias"), args);
-	} else if (gx) {
-		snprintf(args, sizeof(args), "%s, %s, %s", cc, val(t, gx), val(t, gy));
-		sample_call(t, res, si, tex_fn(s, "grad"), args);
-	} else {
-		snprintf(args, sizeof(args), "%s", cc);
-		sample_call(t, res, si, tex_fn(s, ""), args);
+	if (o.offset) {
+		if (need != 2) { unsupported(t, "texture offsets are only supported on 2D textures"); return; }
+		use_texinfo(t);
+		char *shifted = xprintf("(%s + float2(%s) / vkv_texinfo[$U].xy)", cc, val(t, o.offset));
+		if (!shifted) { fail(t, "out of memory"); return; }
+		snprintf(cc, sizeof(cc), "%s", shifted);
+		free(shifted);
 	}
+	char call[1000];
+	const char *pad = need == 1 ? ", 0.0f, 0.0f" : need == 2 ? ", 0.0f" : "";
+	if (o.lod) snprintf(call, sizeof(call), "%s($S, float4(%s%s, %s))", tex_fn(s, "lod"), cc, pad, val(t, o.lod));
+	else if (o.bias) snprintf(call, sizeof(call), "%s($S, float4(%s%s, %s))", tex_fn(s, "bias"), cc, pad, val(t, o.bias));
+	else if (o.gx) snprintf(call, sizeof(call), "%s($S, %s, %s, %s)", tex_fn(s, "grad"), cc, val(t, o.gx), val(t, o.gy));
+	else snprintf(call, sizeof(call), "%s($S, %s)", tex_fn(s, ""), cc);
+	char tmpl[1300];
+	if (dref) {
+		/* GXM has no compare samplers: read the depth and compare with the sampler's op */
+		use_texinfo(t);
+		t->needCompare = true;
+		char r[160];
+		if (proj) snprintf(r, sizeof(r), "(%s / %s.%c)", val(t, w[5]), c, k_swz[cn - 1]);
+		else snprintf(r, sizeof(r), "%s", val(t, w[5]));
+		snprintf(tmpl, sizeof(tmpl), "vkv_compare(%s, %s.x, vkv_texinfo[$V].yzw)", r, call);
+	} else {
+		snprintf(tmpl, sizeof(tmpl), "%s", call);
+	}
+	char *e = per_sampler(t, si, tmpl);
+	if (e) emit_assign(t, res, "%s", e);
+	free(e);
+}
+
+/* texelFetch: GXM can only sample, so the texel center is sampled at that
+ * level, minus the LOD bias of the sampler the texture is bound with. */
+static void emit_image_fetch(Tr *t, const uint32_t *w) {
+	uint32_t res = w[2], img = w[3], coord = w[4];
+	const Smp *s = sampler_of(t, img);
+	if (!s) { unsupported(t, "texel fetch from an unknown texture"); return; }
+	if (coord_need(s) != 2) { unsupported(t, "texel fetch is only supported on 2D textures"); return; }
+	if (!is_float_type(t, w[1])) { fail(t, "integer textures are not supported on GXM"); return; }
+	ImgOps o = image_operands(t, w, 5);
+	if (o.bad) return;
+	use_texinfo(t);
+	char lod[96], pos[256];
+	snprintf(lod, sizeof(lod), "%s", o.lod ? val(t, o.lod) : "0");
+	if (o.offset) snprintf(pos, sizeof(pos), "float2(%s + %s)", val(t, coord), val(t, o.offset));
+	else snprintf(pos, sizeof(pos), "float2(%s)", val(t, coord));
+	char tmpl[700];
+	snprintf(tmpl, sizeof(tmpl),
+	         "tex2Dlod($S, float4((%s + 0.5f) / max(floor(vkv_texinfo[$U].xy / exp2(float(%s))), 1.0f), 0.0f, "
+	         "float(%s) - vkv_texinfo[$V].x))",
+	         pos, lod, lod);
+	char *e = per_sampler(t, img, tmpl);
+	if (e) emit_assign(t, res, "%s", e);
+	free(e);
+}
+
+static void emit_image_query(Tr *t, const uint32_t *w) {
+	uint32_t op = op_of(w), res = w[2], img = w[3];
+	if (!sampler_of(t, img)) { unsupported(t, "size query of an unknown texture"); return; }
+	use_texinfo(t);
+	char tmpl[400];
+	if (op == SpvOpImageQueryLevels) {
+		snprintf(tmpl, sizeof(tmpl), "int(vkv_texinfo[$U].z)");
+	} else {
+		const char *lod = op == SpvOpImageQuerySizeLod ? val(t, w[4]) : "0";
+		uint32_t n = vec_size(t, w[1]);
+		if (n == 1)
+			snprintf(tmpl, sizeof(tmpl), "int(max(floor(vkv_texinfo[$U].x / exp2(float(%s))), 1.0f))", lod);
+		else if (n == 2)
+			snprintf(tmpl, sizeof(tmpl), "int2(max(floor(vkv_texinfo[$U].xy / exp2(float(%s))), 1.0f))", lod);
+		else {
+			unsupported(t, "size queries of array or 3D textures are not supported");
+			return;
+		}
+	}
+	char *e = per_sampler(t, img, tmpl);
+	if (e) emit_assign(t, res, "%s", e);
+	free(e);
 }
 
 static void emit_ext(Tr *t, const uint32_t *w) {
@@ -1578,6 +1721,66 @@ static void emit_block_body(Tr *t, Block *b) {
 	}
 }
 
+/* Writes an else arm. When the arm is nothing but another if/else chain it
+ * becomes "else if", which keeps chains of tests flat for the GXM compiler. */
+static void emit_else(Tr *t, uint32_t from, uint32_t target, uint32_t merge, int depth) {
+	Sb arm = { 0 };
+	Sb *saved = t->out;
+	t->out = &arm;
+	t->indent++;
+	emit_goto(t, from, target, merge, depth);
+	t->indent--;
+	t->out = saved;
+	if (arm.oom) { t->out->oom = true; free(arm.p); return; }
+	/* lines at the arm's own indentation may only belong to one if/else chain */
+	size_t base = (size_t)(t->indent + 1) * 4;
+	bool chain = arm.p && arm.n > base && !strncmp(arm.p + base, "if (", 4);
+	for (const char *l = arm.p; chain && l && *l;) {
+		const char *nl = strchr(l, '\n');
+		size_t len = nl ? (size_t)(nl - l) : strlen(l);
+		size_t sp = 0;
+		while (sp < len && l[sp] == ' ') sp++;
+		if (sp == base && strncmp(l + sp, "if (", 4) && strncmp(l + sp, "{", 1) && strncmp(l + sp, "}", 1) &&
+		    strncmp(l + sp, "else", 4))
+			chain = false;
+		if (sp < base && len) chain = false;
+		l = nl ? nl + 1 : NULL;
+	}
+	/* only the first "if" may start the chain; a second if at this level is a new statement */
+	if (chain) {
+		int ifs = 0;
+		for (const char *l = arm.p; l && *l;) {
+			const char *nl = strchr(l, '\n');
+			size_t sp = 0;
+			while (l[sp] == ' ') sp++;
+			if (sp == base && !strncmp(l + sp, "if (", 4)) ifs++;
+			l = nl ? nl + 1 : NULL;
+		}
+		chain = ifs == 1;
+	}
+	if (chain) {
+		ind(t);
+		sb_puts(t->out, "else ");
+		/* the arm one level less indented, its first line right after "else " */
+		bool first = true;
+		for (const char *l = arm.p; l && *l;) {
+			const char *nl = strchr(l, '\n');
+			size_t len = nl ? (size_t)(nl - l) : strlen(l);
+			size_t skip = first ? base : (len >= 4 ? 4 : len);
+			sb_add(t->out, l + skip, len - skip);
+			sb_puts(t->out, "\n");
+			first = false;
+			l = nl ? nl + 1 : NULL;
+		}
+	} else {
+		ind(t); sb_puts(t->out, "else\n");
+		ind(t); sb_puts(t->out, "{\n");
+		if (arm.p) sb_puts(t->out, arm.p);
+		ind(t); sb_puts(t->out, "}\n");
+	}
+	free(arm.p);
+}
+
 /* Carries on at `target` after an if or a loop has been written. */
 static void emit_after(Tr *t, uint32_t target, uint32_t stop, uint32_t from, int depth) {
 	if (target == stop) return;
@@ -1628,12 +1831,7 @@ static void emit_range(Tr *t, uint32_t label, uint32_t stop, uint32_t from, int 
 			ind(t); sb_puts(t->out, "{\n");
 			t->indent++; emit_goto(t, b->label, tl, merge, depth); t->indent--;
 			ind(t); sb_puts(t->out, "}\n");
-			if (!fEmpty) {
-				ind(t); sb_puts(t->out, "else\n");
-				ind(t); sb_puts(t->out, "{\n");
-				t->indent++; emit_goto(t, b->label, fl, merge, depth); t->indent--;
-				ind(t); sb_puts(t->out, "}\n");
-			}
+			if (!fEmpty) emit_else(t, b->label, fl, merge, depth);
 		}
 		if (b->mergeOp == SpvOpSelectionMerge) emit_after(t, merge, stop, b->label, depth);
 		break;
@@ -1722,7 +1920,8 @@ static void emit_inst(Tr *t, const uint32_t *w) {
 			uint32_t elem;
 			uint32_t var = trace_resource(t, res, &elem);
 			Id *e = id_at(t, res);
-			e->samplerRef = pop == SpvOpTypeSampledImage ? find_combo(t, var, 0) : -1;
+			e->samplerRef = pop == SpvOpTypeSampledImage ? find_combo(t, var, 0)
+			                : pop == SpvOpTypeImage ? find_combo(t, var, NO_SAMPLER) : -1;
 			e->samplerElem = elem;
 			return;
 		}
@@ -1766,6 +1965,27 @@ static void emit_inst(Tr *t, const uint32_t *w) {
 	case SpvOpImageSampleProjDrefImplicitLod: case SpvOpImageSampleProjDrefExplicitLod:
 		emit_image_sample(t, w);
 		return;
+	case SpvOpImage: {
+		/* the image of a sampled image: it keeps pointing at the same texture unit */
+		Id *e = id_at(t, res), *from = id_at(t, w[3]);
+		e->samplerRef = from->samplerRef;
+		e->samplerElem = from->samplerElem;
+		return;
+	}
+	case SpvOpImageFetch: emit_image_fetch(t, w); return;
+	case SpvOpImageQuerySizeLod: case SpvOpImageQuerySize: case SpvOpImageQueryLevels: emit_image_query(t, w); return;
+	case SpvOpOuterProduct: {
+		/* column j is c * r[j]; Cg rows are GLSL columns */
+		char ts[32];
+		type_str(t, rt, ts, sizeof(ts));
+		uint32_t n = vec_size(t, id_at(t, w[4])->type);
+		Sb b = { 0 };
+		for (uint32_t k = 0; k < n; k++) sb_printf(&b, "%s%s * %s.%c", k ? ", " : "", val(t, w[3]), val(t, w[4]), k_swz[k]);
+		emit_assign(t, res, "%s(%s)", ts, b.p ? b.p : "");
+		free(b.p);
+		return;
+	}
+	case SpvOpArrayLength: emit_assign(t, res, "%u", (unsigned)g_nativeArraySize); return;
 	case SpvOpCopyObject:
 		if (def_op(t, rt) == SpvOpTypePointer) return;
 		emit_assign(t, res, "%s", val(t, w[3]));
@@ -1782,7 +2002,6 @@ static void emit_inst(Tr *t, const uint32_t *w) {
 	case SpvOpVectorTimesMatrix: emit_assign(t, res, "mul(%s, %s)", val(t, w[4]), val(t, w[3])); return;
 	case SpvOpMatrixTimesMatrix: emit_assign(t, res, "mul(%s, %s)", val(t, w[4]), val(t, w[3])); return;
 	case SpvOpTranspose: emit_assign(t, res, "transpose(%s)", val(t, w[3])); return;
-	case SpvOpOuterProduct: unsupported(t, "outerProduct is not supported"); return;
 	case SpvOpDPdx: case SpvOpDPdxFine: case SpvOpDPdxCoarse: emit_assign(t, res, "ddx(%s)", val(t, w[3])); return;
 	case SpvOpDPdy: case SpvOpDPdyFine: case SpvOpDPdyCoarse: emit_assign(t, res, "ddy(%s)", val(t, w[3])); return;
 	case SpvOpFwidth: case SpvOpFwidthFine: case SpvOpFwidthCoarse:
@@ -1944,17 +2163,85 @@ static void emit_inst(Tr *t, const uint32_t *w) {
 		return;
 	}
 	case SpvOpExtInst: emit_ext(t, w); return;
-	case SpvOpImageFetch: case SpvOpImageRead: case SpvOpImageWrite: case SpvOpImageQuerySize:
-	case SpvOpImageQuerySizeLod: case SpvOpImageQueryLod: case SpvOpImageQueryLevels: case SpvOpImageQuerySamples:
-	case SpvOpImageGather: case SpvOpImageDrefGather: case SpvOpImage:
-		unsupported(t, "image instruction %u is not supported yet", op);
-		return;
-	case SpvOpArrayLength:
-		unsupported(t, "runtime array length is not supported");
+	case SpvOpImageRead: case SpvOpImageWrite: case SpvOpImageQueryLod: case SpvOpImageQuerySamples:
+	case SpvOpImageGather: case SpvOpImageDrefGather:
+		fail(t, "image instruction %u is not available on GXM", op);
 		return;
 	default:
 		unsupported(t, "SPIR-V instruction %u is not supported yet", op);
 		return;
+	}
+}
+
+/* Values that are used once, in the block that computes them, and have no
+ * side effects are written straight into that use. This keeps the Cg short,
+ * which the GXM compiler handles a lot faster. */
+static bool inline_op(Tr *t, const uint32_t *w) {
+	uint32_t op = op_of(w);
+	if (binop_sym(op)) return true;
+	switch (op) {
+	case SpvOpFNegate: case SpvOpSNegate: case SpvOpNot: case SpvOpLogicalNot: case SpvOpFMod: case SpvOpFRem:
+	case SpvOpDot: case SpvOpMatrixTimesVector: case SpvOpVectorTimesMatrix: case SpvOpMatrixTimesMatrix:
+	case SpvOpTranspose: case SpvOpSelect: case SpvOpConvertFToS: case SpvOpConvertFToU: case SpvOpConvertSToF:
+	case SpvOpConvertUToF: case SpvOpUConvert: case SpvOpSConvert: case SpvOpFConvert: case SpvOpBitcast:
+	case SpvOpCompositeExtract: case SpvOpVectorShuffle: case SpvOpVectorExtractDynamic: case SpvOpAny: case SpvOpAll:
+	case SpvOpIsNan: case SpvOpIsInf: case SpvOpDPdx: case SpvOpDPdy: case SpvOpDPdxFine: case SpvOpDPdyFine:
+	case SpvOpDPdxCoarse: case SpvOpDPdyCoarse: case SpvOpFwidth: case SpvOpFwidthFine: case SpvOpFwidthCoarse:
+	case SpvOpExtInst: case SpvOpImageSampleImplicitLod: case SpvOpImageSampleExplicitLod:
+	case SpvOpImageSampleProjImplicitLod: case SpvOpImageSampleProjExplicitLod: case SpvOpImageSampleDrefImplicitLod:
+	case SpvOpImageSampleDrefExplicitLod: case SpvOpImageSampleProjDrefImplicitLod:
+	case SpvOpImageSampleProjDrefExplicitLod: case SpvOpImageFetch: case SpvOpImageQuerySizeLod:
+	case SpvOpImageQuerySize: case SpvOpImageQueryLevels: case SpvOpCompositeConstruct: case SpvOpCopyObject:
+		return true;
+	case SpvOpLoad: {
+		/* only from storage the shader never writes: inputs and uniforms */
+		const uint32_t *v = def_of(t, w[3]);
+		while (v && (op_of(v) == SpvOpAccessChain || op_of(v) == SpvOpInBoundsAccessChain)) v = def_of(t, v[3]);
+		if (!v || op_of(v) != SpvOpVariable) return false;
+		return v[3] == SpvStorageClassInput || v[3] == SpvStorageClassUniform || v[3] == SpvStorageClassPushConstant;
+	}
+	default:
+		return false;
+	}
+}
+
+/* The consumer swizzles or indexes the value, which the GXM compiler does not
+ * allow on literals: keep constructors in a temporary there. */
+static bool swizzles_operand(uint32_t op) {
+	return op == SpvOpCompositeExtract || op == SpvOpVectorShuffle || op == SpvOpVectorExtractDynamic ||
+	       op == SpvOpCompositeInsert || op == SpvOpVectorInsertDynamic;
+}
+
+static void mark_inlines(Tr *t, Func *f) {
+	for (uint32_t bi = 0; bi < f->blockCount; bi++) {
+		Block *b = &f->blocks[bi];
+		if (!b->term) continue;
+		for (const uint32_t *w = b->first; w <= b->term; w += wc_of(w))
+			for (uint32_t k = 1; k < wc_of(w); k++)
+				if (w[k] < t->bound && t->ids[w[k]].uses < 0xFFFF) t->ids[w[k]].uses++;
+	}
+	for (uint32_t bi = 0; bi < f->blockCount; bi++) {
+		Block *b = &f->blocks[bi];
+		if (!b->term) continue;
+		for (const uint32_t *w = b->first; w < b->term; w += wc_of(w)) {
+			if (wc_of(w) < 3 || !inline_op(t, w)) continue;
+			uint32_t res = w[2], rt = w[1];
+			Id *e = id_at(t, res);
+			uint32_t top = def_op(t, rt);
+			/* the definition itself counts once */
+			if (!e || e->uses != 2 || top == SpvOpTypeStruct || top == SpvOpTypeArray || top == SpvOpTypeVoid ||
+			    top == SpvOpTypePointer || top == SpvOpTypeSampledImage || top == SpvOpTypeImage)
+				continue;
+			/* the one use has to follow in the same block, and not be a phi or a merge */
+			const uint32_t *use = NULL;
+			for (const uint32_t *u = w + wc_of(w); u <= b->term && !use; u += wc_of(u))
+				for (uint32_t k = 1; k < wc_of(u); k++)
+					if (u[k] == res) { use = u; break; }
+			if (!use || op_of(use) == SpvOpPhi || op_of(use) == SpvOpLoopMerge || op_of(use) == SpvOpSelectionMerge)
+				continue;
+			if (op_of(w) == SpvOpCompositeConstruct && swizzles_operand(op_of(use))) continue;
+			e->inl = true;
+		}
 	}
 }
 
@@ -1983,7 +2270,7 @@ static void declare_locals(Tr *t, Func *f) {
 			uint32_t ty = w[1];
 			uint32_t top = def_op(t, ty);
 			if (!top || top == SpvOpTypeVoid || top == SpvOpTypePointer || top == SpvOpTypeSampledImage ||
-			    top == SpvOpTypeImage || top == SpvOpTypeSampler)
+			    top == SpvOpTypeImage || top == SpvOpTypeSampler || t->ids[w[2]].inl)
 				continue;
 			char ts[32], suffix[32];
 			type_str(t, ty, ts, sizeof(ts));
@@ -2032,6 +2319,7 @@ static void emit_function(Tr *t, Func *f) {
 	sb_puts(&out, ")\n{\n");
 	t->indent = 1;
 	t->loopDepth = 0;
+	mark_inlines(t, f);
 	declare_locals(t, f);
 	if (f->blockCount) emit_range(t, f->blocks[0].label, 0, 0, 0);
 	sb_puts(&out, "}\n\n");
@@ -2232,6 +2520,16 @@ int vkv_spirv_translate_native(const uint32_t *words, size_t wordCount, VkvSpirv
 			sb_printf(&o, "/* generated by VkVita from SPIR-V (%s) */\n", stage == VKV_SPIRV_VERTEX ? "vertex" : "fragment");
 			declare_structs(&t, &o);
 			if (t.globals.p) sb_puts(&o, t.globals.p);
+			if (t.texInfo) {
+				sb_puts(&o, "uniform float4 vkv_texinfo[32];\n");
+				add_uniform(&t, "vkv_texinfo", 0, 16, VKV_SPIRV_INTERNAL_SET, stage == VKV_SPIRV_VERTEX ? 2 : 3,
+				            VKV_SPIRV_FLOAT);
+			}
+			if (t.needCompare)
+				sb_puts(&o, "\n/* depth compare: VkVita feeds the sampler's compare op as weights for less, equal and greater */\n"
+				            "float vkv_compare(float r, float d, float3 op)\n{\n"
+				            "    float s = sign(d - r);\n"
+				            "    return op.y + (op.x - op.y) * saturate(s) + (op.z - op.y) * saturate(-s);\n}\n");
 			sb_puts(&o, "\n");
 			if (t.funcsOut.p) sb_puts(&o, t.funcsOut.p);
 			emit_main(&t, &o);

@@ -45,7 +45,6 @@ void vkvGetDefaultConfig(VkvConfig *c) {
 	c->storageArraySize   = 64;
 	c->shaderPackDir      = NULL;
 	c->splash             = 1;
-	c->spirvBackend       = 1;
 }
 
 static void vkv_apply_config(const VkvConfig *c) {
@@ -182,9 +181,6 @@ int vkvLoadConfigFile(const char *path) {
 		else if (!strcmp(k, "ff_frames"))        c.ffFrames = strtoul(v, NULL, 0);
 		else if (!strcmp(k, "storage_array_size")) c.storageArraySize = strtoul(v, NULL, 0);
 		else if (!strcmp(k, "splash"))           c.splash = strtoul(v, NULL, 0);
-		else if (!strcmp(k, "spirv_backend"))
-			c.spirvBackend = !strcmp(v, "native") ? 1 : !strcmp(v, "native_only") ? 2 : !strcmp(v, "cross") ? 0
-			                 : strtoul(v, NULL, 0);
 		else VKV_WARN("config: unknown key '%s'", k);
 	}
 	c.logPath = logPath[0] ? logPath : NULL;
