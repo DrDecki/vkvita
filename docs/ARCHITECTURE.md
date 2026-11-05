@@ -45,8 +45,8 @@ replay and `sceGxmEndScene` runs at the end.
 | `src/vkv_image.c` | Image layout (levels, layers, swizzled or linear), image views, samplers |
 | `src/vkv_formats.c` | VkFormat to GXM format table |
 | `src/vkv_shader.c` | Shader modules: GXP binaries, Cg via vitaShaRK, SPIR-V via the translator; shader cache |
-| `src/vkv_spirv.c` | Entry point of the SPIR-V translation and the SPIRV-Cross fallback: SPIRV-Cross makes HLSL, this file rewrites it into Sony Cg |
-| `src/vkv_spirv_cg.c` | SPIR-V to Cg: VkVita's own translator, used by default |
+| `src/vkv_spirv.c` | Entry point of the SPIR-V translation: runs the lowering passes, then the translator |
+| `src/vkv_spirv_cg.c` | SPIR-V to Cg translator |
 | `src/vkv_spirv_lower.c` | Changes to the SPIR-V before translation (subpass inputs, built-ins, integer division, storage buffers) |
 | `src/vkv_pipeline.c` | Descriptor sets, pipeline layouts, render passes, framebuffers, graphics pipelines |
 | `src/vkv_cmd.c` | Command pools and buffers, recording of all `vkCmd*` calls |
@@ -94,9 +94,8 @@ A shader module can be one of three things:
 1. A GXP binary, used as it is.
 2. Cg source, compiled with vitaShaRK at pipeline creation.
 3. SPIR-V. `vkv_spirv_lower.c` first rewrites the parts GXM cannot do. Then
-   `vkv_spirv_cg.c` writes the Cg for the Sony compiler directly. What it
-   can't handle yet goes through SPIRV-Cross, which makes HLSL that
-   `vkv_spirv.c` rewrites into Cg. After that it goes the same way as Cg.
+   `vkv_spirv_cg.c` writes the Cg for the Sony compiler. After that it goes
+   the same way as Cg.
 
 Compiled programs can be cached as `.gxp` files by hash, so later starts
 skip the compiler. An app can also ship those files and point

@@ -441,7 +441,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateSampler(VkDevice device, const VkSamplerC
 	float maxLod = ci->maxLod < 0.0f ? 0.0f : ci->maxLod;
 	s->maxLevels = maxLod >= (float)VKV_MAX_LEVELS ? VKV_MAX_LEVELS : (uint32_t)maxLod + 1;
 	if (ci->anisotropyEnable) VKV_UNSUPPORTED("anisotropic filtering");
-	if (ci->compareEnable) VKV_UNSUPPORTED("depth compare samplers");
+	s->compare = ci->compareEnable ? (uint32_t)ci->compareOp + 1 : 0;
 	if (ci->minLod > 0.0f) VKV_UNSUPPORTED("sampler minLod");
 	/* GXM stores the bias in eighths around 31 (-3.875 to +4) */
 	float bias = ci->mipLodBias * 8.0f + 31.0f;

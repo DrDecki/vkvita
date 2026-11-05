@@ -25,14 +25,9 @@ shader (it is compiled once per stage); a GXP module has a fixed stage.
 ## SPIR-V
 
 SPIR-V modules are translated to Cg when the first pipeline uses them, then
-compiled like Cg source. VkVita's own translator (`src/vkv_spirv_cg.c`)
-writes Cg straight from the SPIR-V. For the few things it can't do yet it
-falls back to the bundled SPIRV-Cross, which writes HLSL (shader model 3.0)
-that VkVita rewrites into Sony's Cg dialect. `spirv_backend = native_only`
-turns the fallback off, `spirv_backend = cross` uses only SPIRV-Cross.
-Both give the same uniform and texture tables. Shaders cached or shipped as
-GXP are keyed by translator, so switching recompiles them.
-Nothing from the sections below has to be done by hand:
+compiled like Cg source. The translator (`src/vkv_spirv_cg.c`) writes Cg
+straight from the SPIR-V. Nothing from the sections below has to be done by
+hand:
 
 - Vertex input `location = n` becomes the Cg semantic `ATTRn`.
 - `sampler2D` / `samplerCube` at binding `n` become `TEXUNITn`.
@@ -58,6 +53,16 @@ Nothing from the sections below has to be done by hand:
   center of the current pixel, with 1 / framebuffer size coming from a small
   uniform block VkVita fills itself (descriptor set 31). Only color
   attachments can be inputs.
+- `texelFetch`, `textureSize`, `textureQueryLevels` and texture offsets work
+  on 2D textures. GXM can only sample, so a fetch samples the texel center
+  at that mip level, and VkVita feeds the size and mip count of every bound
+  texture to the shader (descriptor set 31).
+- Shadow samplers (`sampler2DShadow`, `texture(s, vec3)`) work: GXM has no
+  compare samplers, so the shader reads the depth and compares it with the
+  `compareOp` of the bound sampler. Use nearest filtering on such samplers,
+  there is no filtered compare.
+- Interface blocks between stages (`out Data { vec3 a; float b; }`) work,
+  every member takes one varying slot.
 - Separate `texture2D` / `sampler` objects are combined. Every image and
   sampler pair used in the shader gets its own texture unit, and VkVita
   builds the texture from both descriptors at draw time.
@@ -90,7 +95,10 @@ Nothing from the sections below has to be done by hand:
 
 Not supported (the translation fails with a message naming the resource):
 storage buffers the shader writes, storage images, compute and geometry
-stages, more than 16 textures in one stage.
+stages, more than 16 textures in one stage, array textures
+(`sampler2DArray`), integer textures, texture gather, reinterpreting bits
+between float and int (`floatBitsToInt` and the like), arrays, matrices or
+structs inside interface blocks.
 
 With `debug = shaders` the log contains the generated Cg (lines starting with
 `cg-src[name:line]`), which is what to look at when the Cg compiler reports

@@ -1,7 +1,7 @@
 /*
  * VkVita sample: shader_tests
  *
- * Twelve tiles, each one checking a shader feature inside the fragment
+ * Twenty tiles, each one checking a shader feature inside the fragment
  * shader: green when the value it read is the expected one, red when not.
  *
  *   first row   struct members in a uniform block: a vec4 and a float in an
@@ -23,9 +23,12 @@
  *               turns red; a red texture with two regions put in by
  *               vkCmdCopyImage on the transfer unit, one from a render
  *               target and one from a texture; an occlusion query result
- *               that vkCmdCopyQueryPoolResults wrote into a storage buffer
+ *               that vkCmdCopyQueryPoolResults wrote into a storage buffer;
+ *               five stripes for texelFetch, textureSize,
+ *               textureQueryLevels, textureOffset and a shadow sampler with
+ *               a compare op
  *
- * Expected picture: nineteen green tiles.
+ * Expected picture: twenty green tiles.
  *
  * Regenerate the shader headers after editing shaders/:
  *   glslangValidator -V --vn k_tile_vert_spv shaders/tile.vert -o tile_vert_spv.h
@@ -223,6 +226,14 @@ int main(void) {
 	sci.mipLodBias = 1.0f;
 	VkSampler biasSampler;
 	VK_CHECK(vkCreateSampler(s.device, &sci, NULL, &biasSampler));
+	sci.addressModeU = sci.addressModeV = sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+	sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+	sci.maxLod = 0.25f;
+	sci.mipLodBias = 0.0f;
+	sci.compareEnable = VK_TRUE;
+	sci.compareOp = VK_COMPARE_OP_LESS;
+	VkSampler compareSampler;
+	VK_CHECK(vkCreateSampler(s.device, &sci, NULL, &compareSampler));
 
 	/* --- images for the fourth and fifth row ------------------------------------ */
 	static const VkComponentMapping ident = { VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
@@ -347,7 +358,7 @@ int main(void) {
 	memset(qp, 0, 16);
 
 	/* --- descriptors ---------------------------------------------------------- */
-	VkDescriptorSetLayoutBinding lb[14] = {
+	VkDescriptorSetLayoutBinding lb[15] = {
 		{ 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
 		{ 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
 		{ 2, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 2, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
@@ -362,14 +373,15 @@ int main(void) {
 		{ 11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
 		{ 12, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
 		{ 13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
+		{ 14, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
 	};
 	VkDescriptorSetLayoutCreateInfo dlci = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-	dlci.bindingCount = 14;
+	dlci.bindingCount = 15;
 	dlci.pBindings = lb;
 	VkDescriptorSetLayout setLayout;
 	VK_CHECK(vkCreateDescriptorSetLayout(s.device, &dlci, NULL, &setLayout));
 	VkDescriptorPoolSize ps[5] = {
-		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 }, { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 9 },
+		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 }, { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 10 },
 		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 2 }, { VK_DESCRIPTOR_TYPE_SAMPLER, 1 },
 		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4 },
 	};
@@ -394,18 +406,19 @@ int main(void) {
 		combined[i] = (VkDescriptorImageInfo){ sampler, tex[i].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
 	for (int i = 0; i < 2; i++)
 		images[i] = (VkDescriptorImageInfo){ VK_NULL_HANDLE, tex[3 + i].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-	VkDescriptorImageInfo extra[6] = {
+	VkDescriptorImageInfo extra[7] = {
 		{ sampler, layerView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
 		{ sampler, targetLayer1, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
 		{ sampler, alphaView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
 		{ sampler, swappedView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
 		{ biasSampler, mipView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
 		{ sampler, copyView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+		{ compareSampler, copyView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
 	};
 	VkDescriptorBufferInfo qbi = { qbuf, 0, VK_WHOLE_SIZE };
-	VkWriteDescriptorSet wr[14];
+	VkWriteDescriptorSet wr[15];
 	memset(wr, 0, sizeof(wr));
-	for (int i = 0; i < 14; i++) {
+	for (int i = 0; i < 15; i++) {
 		wr[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		wr[i].dstSet = set;
 		wr[i].dstBinding = (uint32_t)i;
@@ -419,7 +432,8 @@ int main(void) {
 	for (int i = 0; i < 3; i++) wr[4 + i].pBufferInfo = &sbi[i];
 	for (int i = 0; i < 6; i++) wr[7 + i].pImageInfo = &extra[i];
 	wr[13].pBufferInfo = &qbi;
-	vkUpdateDescriptorSets(s.device, 14, wr, 0, NULL);
+	wr[14].pImageInfo = &extra[6];
+	vkUpdateDescriptorSets(s.device, 15, wr, 0, NULL);
 
 	/* --- pipeline: the tile comes from push constants, no vertex buffer ----- */
 	VkPushConstantRange range = { VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 28 };
@@ -524,7 +538,7 @@ int main(void) {
 		vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &set, 0, NULL);
 		/* about 2.3 texels per pixel on an 8x8 texture over the tile height: mip level 1.2 */
 		const float lodScale = 2.3f * 0.33f * 0.5f * (float)s.extent.height / TEX_SIZE;
-		for (int32_t tile = 0; tile < 19; tile++) {
+		for (int32_t tile = 0; tile < 20; tile++) {
 			struct { int32_t tile, which; float weights[4]; float lodScale; } push = {
 				tile, 1, { 1.0f, 0.5f, 0.25f, 0.125f }, lodScale };
 			vkCmdPushConstants(cb, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push),
@@ -539,7 +553,7 @@ int main(void) {
 		vkCmdPushConstants(cb, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(red), &red);
 		vkCmdDraw(cb, 6, 1, 0, 0);
 		sample_end_frame(&s);
-		if (++frameNo == 60) vkvLog(VKV_LOG_WARN, "shader_tests: running, nineteen green tiles expected");
+		if (++frameNo == 60) vkvLog(VKV_LOG_WARN, "shader_tests: running, twenty green tiles expected");
 	}
 
 	vkDeviceWaitIdle(s.device);
@@ -551,6 +565,7 @@ int main(void) {
 	vkDestroyDescriptorSetLayout(s.device, setLayout, NULL);
 	vkDestroySampler(s.device, sampler, NULL);
 	vkDestroySampler(s.device, biasSampler, NULL);
+	vkDestroySampler(s.device, compareSampler, NULL);
 	VkImageView views[7] = { layerView, alphaView, swappedView, mipView, targetLayer0, targetLayer1, copyView };
 	for (int i = 0; i < 7; i++) vkDestroyImageView(s.device, views[i], NULL);
 	for (int i = 0; i < 2; i++) vkDestroyFramebuffer(s.device, targetFb[i], NULL);

@@ -64,10 +64,6 @@ void vkv_spirv_set_storage_array_size(uint32_t elements);
 void vkv_spirv_set_scissor_variant(int enabled);
 void vkv_spirv_free(VkvSpirvResult *r);
 
-/* Which translator vkv_spirv_translate uses: 1 VkVita's own, falling back to
- * SPIRV-Cross for what it can't do yet (default), 2 only VkVita's own, 0 only SPIRV-Cross. */
-void vkv_spirv_set_backend(int backend);
-int  vkv_spirv_get_backend(void);
 
 /* Rewrites subpass inputs into textures sampled at the current pixel.
  * Returns 1 and a malloc'ed module when something changed, 0 when the module
@@ -95,9 +91,9 @@ int vkv_spirv_lower_ssbo(const uint32_t *words, size_t wordCount, uint32_t array
  * compiler accepts with any denominator. Same return values as above. */
 int vkv_spirv_lower_intdiv(const uint32_t *words, size_t wordCount, uint32_t **outWords, size_t *outCount);
 
-/* VkVita's own translator (vkv_spirv_cg.c), run on an already lowered
- * module. Returns 0, -1 when the shader can't run on GXM, or -2 when it uses
- * something the translator does not handle yet. */
+/* The translator itself (vkv_spirv_cg.c), run on an already lowered module.
+ * Returns 0, -1 when the shader can't run on GXM, or -2 when it uses
+ * something the translator does not handle. */
 void vkv_spirv_native_set_options(uint32_t storageArraySize, int scissorVariant);
 int  vkv_spirv_translate_native(const uint32_t *words, size_t wordCount, VkvSpirvStage stage, VkvSpirvLogFn log,
                                 void *user, const VkvSpirvStride *strides, uint32_t strideCount, VkvSpirvResult *out);

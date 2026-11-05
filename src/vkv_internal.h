@@ -390,6 +390,7 @@ typedef struct VkSampler_T {
 	SceGxmTextureAddrMode  addrU, addrV;
 	uint32_t               maxLevels;
 	uint32_t               lodBias;     /* GXM encoding: 31 + 8 * bias */
+	uint32_t               compare;     /* 0 = no depth compare, else VkCompareOp + 1 (done in the shader) */
 } VkvSampler;
 
 void vkv_texture_apply_sampler(SceGxmTexture *tex, const VkvSampler *s, uint32_t levels);
