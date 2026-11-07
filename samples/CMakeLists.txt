@@ -39,3 +39,14 @@ if(VKV_WITH_SPIRV)
   vkv_add_sample(msaa         "VkVita MSAA"     VKVT00007 USE_COMMON)
   vkv_add_sample(shader_tests "VkVita Shaders"  VKVT00008 USE_COMMON)
 endif()
+
+# SDL3's GPU API on VkVita. Needs an SDL3 for the Vita built with -DSDL_VULKAN=ON
+# (see docs/SDL3.md); pass its location with -DSDL3_DIR=<prefix>/lib/cmake/SDL3.
+find_package(SDL3 CONFIG QUIET COMPONENTS SDL3-static)
+if(VKV_WITH_SPIRV AND SDL3_FOUND)
+  vkv_add_sample(sdl3_gpu     "VkVita SDL3 GPU" VKVT00009)
+  target_link_libraries(sdl3_gpu PRIVATE SDL3::SDL3-static)
+  # only SDL calls into VkVita, so make sure the linker keeps its entry point
+  target_link_options(sdl3_gpu PRIVATE -Wl,--undefined=vkGetInstanceProcAddr)
+  message(STATUS "VkVita: building the sdl3_gpu sample with SDL3 ${SDL3_VERSION}")
+endif()

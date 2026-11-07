@@ -53,6 +53,7 @@ If you cloned without `--recursive`, run `git submodule update --init` once.
 |---|---|---|
 | [Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers) | git submodule in `third_party/Vulkan-Headers` | upstream commit `73814d0` (`VK_HEADER_VERSION` 366) |
 | [SPIR-V headers](https://github.com/KhronosGroup/SPIRV-Headers) (`spirv.h`, `GLSL.std.450.h`) | copied into `third_party/spirv` | SPIR-V 1.6 |
+| [DejaVu Sans Mono](https://dejavu-fonts.github.io/) | rasterized into the boot screen font `src/vkv_splash_font.h` by `tools/gen_splash_font.py` | 2.37 |
 
 Everything below can be changed at runtime without rebuilding, either in code (`vkvSetConfig`, `vkvSetDebugFlags`, `vkvSetCompatFlags`) or by creating `ux0:data/vkvita/config.txt` on the console:
 
@@ -111,6 +112,7 @@ The config file also works with an already finished VPK.
 | `ff_buffer_kb=1024` | Streaming buffer size of the fixed function layer per frame |
 | `ff_frames=3` | Frames in flight for the fixed function layer |
 | `splash=1` | Show the boot screen while the app loads, `0` turns it off |
+| `splash_color=0x3366CC` | Logo and bar color of the boot screen, `0` keeps the logo's own color |
 
 ## Using VkVita
 
@@ -147,7 +149,29 @@ should be one color on a transparent background. Its alpha channel becomes
 the shape and its color the logo color. The tool writes
 `src/vkv_splash_logo.h`.
 
+To keep the logo but give it another color, set `config.splashColor`
+(0xRRGGBB) or `splash_color` in the config file. The samples use the accent
+color of their LiveArea.
+
+For a completely different boot screen, hand VkVita a function that draws it:
+
+```c
+static void draw_boot(uint32_t *pixels, uint32_t pitch, uint32_t ms, void *user) {
+	/* pixels: the 960x544 screen, 0xAABBGGRR, ms since it came up */
+	vkvSplashText(pixels, pitch, 40, 40, 2, 0xFFFFFFFF, ms < 1000 ? "Loading" : "Loading ...");
+}
+
+vkvSetSplashDraw(draw_boot, NULL); /* before vkvShowSplash() or vkCreateInstance */
+```
+
+The function runs on the boot screen thread once per vblank until the first
+present, so it must not use data the loading code is changing.
+`vkvSplashText()` draws ASCII text with a small built-in 8x16 font.
+vkQuake2 uses this for a 1997 PC start up screen.
+
 There is also a small fixed function layer (`vkvita_ff.h`) for old GL 1.x style code, see [docs/FIXED_FUNCTION.md](docs/FIXED_FUNCTION.md).
+
+SDL3's GPU API runs on VkVita through SDL's Vulkan driver, see [docs/SDL3.md](docs/SDL3.md).
 
 If you want to work on VkVita itself, [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains how the code is put together.
 
@@ -164,7 +188,8 @@ Samples can be found in the `samples` folder.
 | `gpu_features` | Mipmaps (uploaded and blitted), a mipmapped cube map, a BC1 texture with a separate sampler, wide lines, indirect draws and occlusion queries |
 | `subpasses` | A render pass with three subpasses, one of them reading the first through an input attachment |
 | `msaa` | 4x and 2x MSAA with a resolve attachment, next to the same scene without multisampling |
-| `shader_tests` | Nineteen checks run on the GPU, green when they pass: structs in uniform blocks, sampler arrays, read-only storage buffers, std430 arrays, array layers, swizzles, LOD bias, the pixel exact scissor, image copies on the transfer unit and `vkCmdCopyQueryPoolResults` |
+| `shader_tests` | Twenty checks run on the GPU, green when they pass: structs in uniform blocks, sampler arrays, read-only storage buffers, std430 arrays, array layers, swizzles, LOD bias, the pixel exact scissor, image copies on the transfer unit, `vkCmdCopyQueryPoolResults`, and texelFetch, texture size queries, texture offsets and depth compare samplers |
+| `sdl3_gpu` | SDL3's GPU API on VkVita, built when an SDL3 with Vulkan is found (see [docs/SDL3.md](docs/SDL3.md)) |
 | `standalone_template` | A starting point for your own project |
 
 ## Tools

@@ -41,6 +41,7 @@ ff_buffer_kb        = 1024    # fixed-function streaming buffer per frame
 ff_frames           = 3       # fixed-function frames in flight
 storage_array_size  = 64      # elements of a runtime array in a read-only storage buffer
 splash              = 1       # boot screen until the first present, 0 turns it off
+splash_color        = 0       # logo color of the boot screen as 0xRRGGBB, 0 = the logo's own
 ```
 
 Flag values can also be numbers (`debug = 0x0d`).

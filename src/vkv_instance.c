@@ -11,6 +11,7 @@ static const VkExtensionProperties k_instanceExts[] = {
 
 static const VkExtensionProperties k_deviceExts[] = {
 	{ VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_SWAPCHAIN_SPEC_VERSION },
+	{ VK_KHR_MAINTENANCE_1_EXTENSION_NAME, VK_KHR_MAINTENANCE_1_SPEC_VERSION },
 };
 
 static const VkLayerProperties k_layers[] = {
@@ -167,9 +168,10 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceProperties(VkPhysicalDevice pd, Vk
 	l->timestampComputeAndGraphics = VK_TRUE;
 	l->timestampPeriod = 1.0f;
 	l->maxSamplerLodBias = 0.0f;
-	l->maxSamplerAnisotropy = 1.0f;
+	l->maxSamplerAnisotropy = 16.0f;
 	l->maxDrawIndirectCount = 0xFFFFFFFFu;
-	l->maxClipDistances = 0;
+	l->maxClipDistances = 8;
+	l->maxCombinedClipAndCullDistances = 8;
 	l->maxCullDistances = 0;
 	l->discreteQueuePriorities = 2;
 	l->pointSizeRange[0] = 1.0f;
@@ -192,15 +194,18 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFeatures(VkPhysicalDevice pd, VkPh
 	memset(f, 0, sizeof(*f));
 	f->fillModeNonSolid = VK_TRUE;
 	f->depthBiasClamp = VK_FALSE;
-	f->samplerAnisotropy = VK_FALSE;
 	f->fullDrawIndexUint32 = VK_TRUE;
 	f->textureCompressionBC = VK_TRUE;
 	f->wideLines = VK_TRUE;
 	f->multiDrawIndirect = VK_TRUE;
 	f->drawIndirectFirstInstance = VK_TRUE;
 	f->occlusionQueryPrecise = VK_TRUE;
-	f->independentBlend = VK_FALSE;
-	f->shaderClipDistance = VK_FALSE;
+	f->independentBlend = VK_TRUE;
+	f->imageCubeArray = VK_TRUE;
+	f->depthClamp = VK_TRUE;
+	f->sampleRateShading = VK_TRUE;
+	f->samplerAnisotropy = VK_TRUE;
+	f->shaderClipDistance = VK_TRUE;
 }
 
 VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFeatures2(VkPhysicalDevice pd, VkPhysicalDeviceFeatures2 *f) {

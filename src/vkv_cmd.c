@@ -47,6 +47,12 @@ VKAPI_ATTR VkResult VKAPI_CALL vkResetCommandPool(VkDevice device, VkCommandPool
 	return VK_SUCCESS;
 }
 
+VKAPI_ATTR void VKAPI_CALL vkTrimCommandPool(VkDevice device, VkCommandPool pool, VkCommandPoolTrimFlags flags) {
+	(void)device;
+	(void)pool;
+	(void)flags;
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL vkAllocateCommandBuffers(VkDevice device, const VkCommandBufferAllocateInfo *ai,
                                                         VkCommandBuffer *pBuffers) {
 	VkvCmdPool *p = VKV_ND(VkvCmdPool, ai->commandPool);
@@ -275,7 +281,6 @@ VKAPI_ATTR void VKAPI_CALL vkCmdSetLineWidth(VkCommandBuffer cb, float w) {
 }
 VKAPI_ATTR void VKAPI_CALL vkCmdSetBlendConstants(VkCommandBuffer cb, const float c[4]) {
 	(void)cb; (void)c;
-	VKV_UNSUPPORTED("blend constants");
 }
 VKAPI_ATTR void VKAPI_CALL vkCmdSetDepthBounds(VkCommandBuffer cb, float a, float b) {
 	(void)cb; (void)a; (void)b;
@@ -286,10 +291,9 @@ static bool vkv_draw_checks(VkCommandBuffer cb, const char *fn) {
 	if (!vkv_validate()) return true;
 	if (!cb->inRenderPass) { vkv_fail(fn, "draw outside a render pass"); return false; }
 	if (!cb->pipeline) { vkv_fail(fn, "draw without a bound pipeline"); return false; }
-	const VkvRenderPass *prp = cb->pipeline->rp, *crp = cb->rp;
-	if (prp && crp && cb->subpass < crp->subpassCount && prp->sub[cb->pipeline->subpass].color >= 0 &&
-	    crp->sub[cb->subpass].color >= 0) {
-		VkFormat a = prp->att[prp->sub[cb->pipeline->subpass].color].format;
+	const VkvRenderPass *crp = cb->rp;
+	if (cb->pipeline->colorFormat && crp && cb->subpass < crp->subpassCount && crp->sub[cb->subpass].color >= 0) {
+		VkFormat a = cb->pipeline->colorFormat;
 		VkFormat b = crp->att[crp->sub[cb->subpass].color].format;
 		if (vkv_format(a) && vkv_format(b) && vkv_format(a)->outReg != vkv_format(b)->outReg) {
 			vkv_fail(fn, "pipeline was created for an incompatible render pass color format");

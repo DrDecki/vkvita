@@ -57,6 +57,7 @@ typedef struct VkvConfig {
 	uint32_t       storageArraySize;
 	const char    *shaderPackDir;
 	uint32_t       splash;
+	uint32_t       splashColor;
 } VkvConfig;
 
 void     vkvGetDefaultConfig(VkvConfig *config);
@@ -67,6 +68,10 @@ void     vkvSetCompatFlags(VkvCompatFlags flags);
 int      vkvLoadConfigFile(const char *path);
 
 void     vkvShowSplash(void);
+
+typedef void (*PFN_vkvSplashDraw)(uint32_t *pixels, uint32_t pitch, uint32_t ms, void *user);
+void     vkvSetSplashDraw(PFN_vkvSplashDraw draw, void *user);
+void     vkvSplashText(uint32_t *pixels, uint32_t pitch, int x, int y, int scale, uint32_t color, const char *text);
 
 typedef enum VkvLogLevel {
 	VKV_LOG_DEBUG = 0,

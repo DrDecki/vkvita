@@ -547,6 +547,7 @@ typedef struct VkPipeline_T {
 	struct VkDevice_T        *device;
 	VkvPipelineLayout        *layout;
 	VkvRenderPass            *rp;
+	VkFormat                  colorFormat;
 	uint32_t                  subpass;
 	uint32_t                  samples;
 	const SceGxmProgram      *vprog, *fprog;
