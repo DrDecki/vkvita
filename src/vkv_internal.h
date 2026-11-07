@@ -577,7 +577,8 @@ typedef struct VkPipeline_T {
 	VkvObject                 obj;
 	struct VkDevice_T        *device;
 	VkvPipelineLayout        *layout;
-	VkvRenderPass            *rp;
+	VkvRenderPass            *rp;          /* only while the pipeline is created: the pass may be destroyed after */
+	VkFormat                  colorFormat; /* color attachment of its subpass, VK_FORMAT_UNDEFINED for none */
 	uint32_t                  subpass;
 	uint32_t                  samples;
 	const SceGxmProgram      *vprog, *fprog;

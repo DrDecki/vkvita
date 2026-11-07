@@ -158,7 +158,7 @@ static void put_f(uint8_t *ubo, uint32_t off, const float *v, uint32_t n) { memc
 static void put_i(uint8_t *ubo, uint32_t off, int32_t v) { memcpy(ubo + off, &v, 4); }
 
 int main(void) {
-	sample_configure("shader_tests");
+	sample_configure("shader_tests", 0x5ABE5A);
 	Sample s;
 	sample_init(&s, "shader_tests", false);
 

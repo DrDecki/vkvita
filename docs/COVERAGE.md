@@ -14,8 +14,8 @@ as unsupported.
 | Function(s) | Status | Notes |
 |---|---|---|
 | `vkCreateInstance`, `vkDestroyInstance`, `vkEnumerateInstance*` | full | Extensions: `VK_KHR_surface`, `VK_EXT_headless_surface`, `VK_KHR_get_physical_device_properties2`. `VK_EXT_debug_utils/report` are accepted, messages go to the VkVita log |
-| `vkEnumeratePhysicalDevices`, `vkGetPhysicalDevice*` (+ `2`/`2KHR`) | full | One device, one queue family (graphics + transfer) |
-| `vkCreateDevice`, `vkDestroyDevice`, `vkGetDeviceQueue`, `vkDeviceWaitIdle`, `vkQueueWaitIdle` | full | One device per process (GXM is process-global) |
+| `vkEnumeratePhysicalDevices`, `vkGetPhysicalDevice*` (+ `2`/`2KHR`) | full | One device, one queue family (graphics + transfer). `imageCubeArray`, `depthClamp`, `sampleRateShading`, `samplerAnisotropy` and `shaderClipDistance` are reported so that layers like SDL_GPU accept the device; using them is logged once as unsupported (see the rows below) |
+| `vkCreateDevice`, `vkDestroyDevice`, `vkGetDeviceQueue`, `vkDeviceWaitIdle`, `vkQueueWaitIdle` | full | One device per process (GXM is process-global). Device extensions: `VK_KHR_swapchain`, `VK_KHR_maintenance1` (negative viewport heights, `vkTrimCommandPool`) |
 | `vkCreateHeadlessSurfaceEXT`, `vkDestroySurfaceKHR`, `vkGetPhysicalDeviceSurface*` | full | The surface is the Vita display |
 | `vkCreateSwapchainKHR`, `vkGetSwapchainImagesKHR`, `vkAcquireNextImage(2)KHR`, `vkQueuePresentKHR` | full | 960x544, 2 to 4 images, RGBA8/BGRA8 (+SRGB, treated as UNORM). FIFO and MAILBOX wait for vblank, IMMEDIATE does not. One swapchain at a time |
 
@@ -40,7 +40,7 @@ RGBA16F, RG16F, R16F, R32F. Compressed formats must be power-of-two sized.
 | Function(s) | Status | Notes |
 |---|---|---|
 | `vkCreateShaderModule` | partial | SPIR-V (translated to Cg), Cg source or GXP binary, see SHADERS.md |
-| `vkCreateGraphicsPipelines`, `vkDestroyPipeline` | partial | Vertex + fragment only. Topologies: point list, line list, line strip (drawn as a line list of vertex pairs), triangle list/strip/fan. Blend ops add/sub/rev-sub/min/max, all factors except constant/dual-source. Polygon modes fill/line/point. Depth, stencil (two-sided), depth bias. Dynamic: viewport, scissor, depth bias, stencil masks/reference |
+| `vkCreateGraphicsPipelines`, `vkDestroyPipeline` | partial | Vertex + fragment only. Topologies: point list, line list, line strip (drawn as a line list of vertex pairs), triangle list/strip/fan. Blend ops add/sub/rev-sub/min/max, all factors except constant/dual-source. Polygon modes fill/line/point. Depth, stencil (two-sided), depth bias. Depth clamp and sample shading are ignored. The render pass may be destroyed after the pipeline is created. Dynamic: viewport, scissor, depth bias, stencil masks/reference |
 | `vkCreateComputePipelines` | stub | Returns `VK_ERROR_FEATURE_NOT_PRESENT` |
 | `vkCreatePipelineLayout`, `vkCreatePipelineCache` (+ get/merge) | full | Pipeline cache data is empty (GXM patching is fast) |
 | `vkCreateDescriptorSetLayout`, pools, `vkAllocate/Free/ResetDescriptorSets`, `vkUpdateDescriptorSets` | partial | Uniform buffer (+dynamic), combined image sampler, sampled image, sampler, immutable samplers, input attachments (color only, SPIR-V shaders), storage buffers (+dynamic, read only, SPIR-V shaders), descriptor arrays. Up to 4 sets. For Cg shaders binding n = GXM texture unit n; SPIR-V shaders carry their own table |

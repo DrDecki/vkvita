@@ -55,6 +55,7 @@ int main(void) {
 	vkvGetDefaultConfig(&cfg);
 	cfg.debugFlags |= VKV_DEBUG_LOG_INFO | VKV_DEBUG_LOG_SHADERS | VKV_DEBUG_VALIDATION;
 	cfg.logPath = "ux0:data/vkvita/hello_triangle.log";
+	cfg.splashColor = 0xE8553F; /* the boot screen logo in the LiveArea color */
 	vkvSetConfig(&cfg);
 
 	/* Instance + device ------------------------------------------------- */

@@ -4,6 +4,7 @@
  */
 #include "vkv_internal.h"
 #include "vkv_splash_logo.h"
+#include "vkv_splash_font.h"
 
 #define VKV_SPLASH_W      960
 #define VKV_SPLASH_H      544
@@ -29,7 +30,41 @@ static struct {
 	SceUID   thread;
 	volatile int stop;
 	uint32_t presents;
-} s_splash = { .memUid = -1, .thread = -1 };
+	uint32_t color;            /* 0x00BBGGRR */
+	PFN_vkvSplashDraw draw;    /* custom boot screen, NULL = the VkVita one */
+	void    *drawUser;
+} s_splash = { .memUid = -1, .thread = -1, .color = VKV_SPLASH_LOGO_COLOR };
+
+void vkvSetSplashDraw(PFN_vkvSplashDraw draw, void *user) {
+	s_splash.draw = draw;
+	s_splash.drawUser = user;
+}
+
+void vkvSplashText(uint32_t *pixels, uint32_t pitch, int x, int y, int scale, uint32_t color, const char *text) {
+	if (!pixels || !text) return;
+	if (scale < 1) scale = 1;
+	int cx = x;
+	for (; *text; text++) {
+		if (*text == '\n') {
+			cx = x;
+			y += 16 * scale;
+			continue;
+		}
+		unsigned char ch = (unsigned char)*text;
+		const unsigned char *g = k_splashFont + (ch >= 32 && ch < 127 ? ch - 32 : 0) * 16;
+		for (int gy = 0; gy < 16 * scale; gy++) {
+			int py = y + gy;
+			if (py < 0 || py >= VKV_SPLASH_H) continue;
+			unsigned bits = g[gy / scale];
+			if (!bits) continue;
+			for (int gx = 0; gx < 8 * scale; gx++) {
+				int px = cx + gx;
+				if (px >= 0 && px < VKV_SPLASH_W && (bits & (0x80u >> (gx / scale)))) pixels[py * (int)pitch + px] = color;
+			}
+		}
+		cx += 8 * scale;
+	}
+}
 
 static uint32_t vkv_splash_mix(uint32_t bg, uint32_t fg, uint32_t a) {
 	uint32_t out = 0xFF000000u;
@@ -47,7 +82,7 @@ static uint32_t vkv_splash_ease(uint32_t t) {
 }
 
 static void vkv_splash_draw_logo(uint32_t *fb, uint32_t pitch, const uint8_t *mask, uint32_t fade) {
-	uint32_t color = 0xFF000000u | VKV_SPLASH_LOGO_COLOR;
+	uint32_t color = 0xFF000000u | s_splash.color;
 	for (uint32_t y = 0; y < VKV_SPLASH_LOGO_H; y++) {
 		uint32_t *row = fb + (VKV_SPLASH_LOGO_Y + y) * pitch + VKV_SPLASH_LOGO_X;
 		const uint8_t *m = mask + y * VKV_SPLASH_LOGO_W;
@@ -57,7 +92,7 @@ static void vkv_splash_draw_logo(uint32_t *fb, uint32_t pitch, const uint8_t *ma
 }
 
 static void vkv_splash_draw_bar(uint32_t *fb, uint32_t pitch, uint32_t ms, uint32_t fade) {
-	uint32_t color = 0xFF000000u | VKV_SPLASH_LOGO_COLOR;
+	uint32_t color = 0xFF000000u | s_splash.color;
 	uint32_t track = vkv_splash_mix(VKV_SPLASH_BG, VKV_SPLASH_TRACK, (255 * fade) >> 10);
 	uint32_t seg = vkv_splash_mix(VKV_SPLASH_BG, color, (255 * fade) >> 10);
 	uint32_t phase = (ms % VKV_SPLASH_BAR_PERIOD_MS) * 2048 / VKV_SPLASH_BAR_PERIOD_MS;
@@ -101,12 +136,18 @@ static int vkv_splash_thread(SceSize args, void *argp) {
 	fb.width       = VKV_SPLASH_W;
 	fb.height      = VKV_SPLASH_H;
 	uint64_t start = sceKernelGetProcessTimeWide();
-	vkv_splash_draw(s_splash.fb, VKV_SPLASH_W, s_splash.mask, 0, true);
+	if (s_splash.draw) {
+		memset(s_splash.fb, 0, VKV_SPLASH_W * VKV_SPLASH_H * 4);
+		s_splash.draw(s_splash.fb, VKV_SPLASH_W, 0, s_splash.drawUser);
+	} else {
+		vkv_splash_draw(s_splash.fb, VKV_SPLASH_W, s_splash.mask, 0, true);
+	}
 	sceDisplaySetFrameBuf(&fb, SCE_DISPLAY_SETBUF_NEXTFRAME);
 	while (!s_splash.stop) {
 		sceDisplayWaitVblankStart();
 		uint32_t ms = (uint32_t)((sceKernelGetProcessTimeWide() - start) / 1000);
-		vkv_splash_draw(s_splash.fb, VKV_SPLASH_W, s_splash.mask, ms, false);
+		if (s_splash.draw) s_splash.draw(s_splash.fb, VKV_SPLASH_W, ms, s_splash.drawUser);
+		else vkv_splash_draw(s_splash.fb, VKV_SPLASH_W, s_splash.mask, ms, false);
 	}
 	return 0;
 }
@@ -118,9 +159,11 @@ void vkvShowSplash(void) {
 	                                         VKV_SPLASH_BYTES, NULL);
 	if (s_splash.memUid < 0) return;
 	sceKernelGetMemBlockBase(s_splash.memUid, (void **)&s_splash.fb);
-	s_splash.mask = vkv_splash_decode_mask();
+	uint32_t rgb = g_vkv.cfg.splashColor;
+	s_splash.color = rgb ? ((rgb & 0xFF) << 16) | (rgb & 0xFF00) | ((rgb >> 16) & 0xFF) : VKV_SPLASH_LOGO_COLOR;
+	s_splash.mask = s_splash.draw ? NULL : vkv_splash_decode_mask();
 	s_splash.stop = 0;
-	s_splash.thread = s_splash.mask ? sceKernelCreateThread("vkv_splash", vkv_splash_thread, 0x10000100,
+	s_splash.thread = s_splash.mask || s_splash.draw ? sceKernelCreateThread("vkv_splash", vkv_splash_thread, 0x10000100,
 	                                                        0x4000, 0, 0, NULL) : -1;
 	if (s_splash.thread < 0 || sceKernelStartThread(s_splash.thread, 0, NULL) < 0) {
 		if (s_splash.thread >= 0) sceKernelDeleteThread(s_splash.thread);

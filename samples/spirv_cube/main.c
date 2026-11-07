@@ -58,7 +58,7 @@ static void build_cube(Vertex *v, uint16_t *idx) {
 }
 
 int main(void) {
-	sample_configure("spirv_cube");
+	sample_configure("spirv_cube", 0x46C878);
 	Sample s;
 	sample_init(&s, "spirv_cube", true);
 

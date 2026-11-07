@@ -16,7 +16,7 @@ void sample_fatal(const char *what) {
 	for (;;) {}
 }
 
-void sample_configure(const char *name) {
+void sample_configure(const char *name, uint32_t splashColor) {
 	static char logPath[96];
 	snprintf(logPath, sizeof(logPath), "ux0:data/vkvita/%s.log", name);
 	VkvConfig cfg;
@@ -26,6 +26,7 @@ void sample_configure(const char *name) {
 	cfg.compatFlags = VKV_COMPAT_SHADER_CACHE; /* 2nd launch loads the dumped GXP instead of compiling */
 	cfg.logPath = logPath;
 	cfg.profileInterval = 300;
+	cfg.splashColor = splashColor;
 	vkvSetConfig(&cfg);
 }
 

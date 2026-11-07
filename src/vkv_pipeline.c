@@ -872,7 +872,6 @@ VkResult vkv_create_pipeline(struct VkDevice_T *dev, const VkGraphicsPipelineCre
 		if (rs->polygonMode == VK_POLYGON_MODE_LINE) p->polyMode = SCE_GXM_POLYGON_MODE_TRIANGLE_LINE;
 		else if (rs->polygonMode == VK_POLYGON_MODE_POINT) p->polyMode = SCE_GXM_POLYGON_MODE_TRIANGLE_POINT;
 	}
-	if (rs && rs->depthClampEnable) VKV_UNSUPPORTED("depth clamp");
 	if (rs && rs->rasterizerDiscardEnable) VKV_UNSUPPORTED("rasterizer discard");
 	p->lineWidth = rs ? rs->lineWidth : 1.0f;
 	p->depthBiasEnable = rs && rs->depthBiasEnable;
@@ -886,6 +885,9 @@ VkResult vkv_create_pipeline(struct VkDevice_T *dev, const VkGraphicsPipelineCre
 	bool hasDepth = p->rp && p->rp->sub[p->subpass].depth >= 0;
 	p->depthFunc = SCE_GXM_DEPTH_FUNC_ALWAYS;
 	p->depthWrite = SCE_GXM_DEPTH_WRITE_DISABLED;
+	/* without depth there is nothing to clamp (SDL_GPU asks for it on every pipeline) */
+	if (rs && rs->depthClampEnable && ds && hasDepth && ds->depthTestEnable)
+		VKV_UNSUPPORTED("depth clamp (depth outside the viewport range is clipped)");
 	if (ds && hasDepth && ds->depthTestEnable) {
 		p->depthFunc = vkv_depth_func(ds->depthCompareOp);
 		p->depthWrite = ds->depthWriteEnable ? SCE_GXM_DEPTH_WRITE_ENABLED : SCE_GXM_DEPTH_WRITE_DISABLED;
@@ -932,6 +934,8 @@ VkResult vkv_create_pipeline(struct VkDevice_T *dev, const VkGraphicsPipelineCre
 		p->scissor = vs->pScissors[0];
 		p->hasScissor = true;
 	}
+	if (p->rp && p->rp->sub[p->subpass].color >= 0) p->colorFormat = p->rp->att[p->rp->sub[p->subpass].color].format;
+	p->rp = NULL;
 	*out = p;
 	return VK_SUCCESS;
 }

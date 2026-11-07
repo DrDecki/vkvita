@@ -73,7 +73,7 @@ static void build_cube(Vertex *v, uint16_t *idx) {
 }
 
 int main(void) {
-	sample_configure("textured_cube");
+	sample_configure("textured_cube", 0x408CEB);
 	Sample s;
 	sample_init(&s, "textured_cube", true);
 

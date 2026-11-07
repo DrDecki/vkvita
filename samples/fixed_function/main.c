@@ -33,7 +33,7 @@ static void cube(VkvFFContext ff) {
 }
 
 int main(void) {
-	sample_configure("fixed_function");
+	sample_configure("fixed_function", 0xA85CE6);
 	Sample s;
 	sample_init(&s, "fixed_function", true);
 

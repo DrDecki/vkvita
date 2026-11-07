@@ -31,6 +31,8 @@ SAMPLES = {
                  tagline="Jagged edges on the left, 4x multisampling on the right"),
     "shader_tests": dict(label="Shaders", accent=(90, 190, 90), motif="tiles",
                          tagline="Struct uniforms and sampler arrays, checked on the GPU"),
+    "sdl3_gpu": dict(label="SDL3 GPU", accent=(50, 170, 230), motif="panels",
+                     tagline="SDL3's GPU API on VkVita through SDL's Vulkan driver"),
 }
 
 

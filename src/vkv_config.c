@@ -45,6 +45,7 @@ void vkvGetDefaultConfig(VkvConfig *c) {
 	c->storageArraySize   = 64;
 	c->shaderPackDir      = NULL;
 	c->splash             = 1;
+	c->splashColor        = 0;
 }
 
 static void vkv_apply_config(const VkvConfig *c) {
@@ -181,6 +182,7 @@ int vkvLoadConfigFile(const char *path) {
 		else if (!strcmp(k, "ff_frames"))        c.ffFrames = strtoul(v, NULL, 0);
 		else if (!strcmp(k, "storage_array_size")) c.storageArraySize = strtoul(v, NULL, 0);
 		else if (!strcmp(k, "splash"))           c.splash = strtoul(v, NULL, 0);
+		else if (!strcmp(k, "splash_color"))     c.splashColor = strtoul(v, NULL, 0);
 		else VKV_WARN("config: unknown key '%s'", k);
 	}
 	c.logPath = logPath[0] ? logPath : NULL;

@@ -94,7 +94,7 @@ static VkShaderModule make_module(Sample *s, const uint32_t *code, size_t size) 
 }
 
 int main(void) {
-	sample_configure("subpasses");
+	sample_configure("subpasses", 0x28C8D2);
 	Sample s;
 	sample_init(&s, "subpasses", true);
 	const uint32_t W = s.extent.width, H = s.extent.height;

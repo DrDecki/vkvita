@@ -146,7 +146,7 @@ static void build_cube(Vertex *v, uint16_t *idx) {
 }
 
 int main(void) {
-	sample_configure("gpu_features");
+	sample_configure("gpu_features", 0xF0B428);
 	Sample s;
 	sample_init(&s, "gpu_features", true);
 

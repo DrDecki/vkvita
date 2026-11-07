@@ -275,7 +275,7 @@ static void draw_scene(VkCommandBuffer cb, VkPipelineLayout layout, VkPipeline c
 }
 
 int main(void) {
-	sample_configure("msaa");
+	sample_configure("msaa", 0xE14678);
 	Sample s;
 	sample_init(&s, "msaa", true);
 	const uint32_t W = s.extent.width, H = s.extent.height;

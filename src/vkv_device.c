@@ -72,14 +72,15 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice pd, const VkDevic
 		return VK_ERROR_TOO_MANY_OBJECTS;
 	}
 	for (uint32_t i = 0; i < ci->enabledExtensionCount; i++) {
-		if (strcmp(ci->ppEnabledExtensionNames[i], VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
+		if (strcmp(ci->ppEnabledExtensionNames[i], VK_KHR_SWAPCHAIN_EXTENSION_NAME) &&
+		    strcmp(ci->ppEnabledExtensionNames[i], VK_KHR_MAINTENANCE_1_EXTENSION_NAME)) {
 			VKV_ERROR("device extension %s is not supported", ci->ppEnabledExtensionNames[i]);
 			return VK_ERROR_EXTENSION_NOT_PRESENT;
 		}
 	}
 	if (ci->pEnabledFeatures) {
 		const VkPhysicalDeviceFeatures *f = ci->pEnabledFeatures;
-		if (f->geometryShader || f->tessellationShader || f->multiViewport || f->samplerAnisotropy ||
+		if (f->geometryShader || f->tessellationShader || f->multiViewport ||
 		    f->shaderFloat64 || f->largePoints)
 			VKV_WARN("vkCreateDevice: some requested features are not available and will be ignored");
 	}

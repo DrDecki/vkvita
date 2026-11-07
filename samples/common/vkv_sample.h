@@ -59,7 +59,9 @@ typedef struct Sample {
 
 /* Configure VkVita for a sample: logging to ux0:data/vkvita/<name>.log,
  * validation + profiling on, shader cache on. */
-void     sample_configure(const char *name);
+/* Logging into ux0:data/vkvita/<name>.log; the boot screen logo gets the
+ * LiveArea accent color (0xRRGGBB) of the sample. */
+void     sample_configure(const char *name, uint32_t splashColor);
 bool     sample_init(Sample *s, const char *appName, bool withDepth);
 void     sample_shutdown(Sample *s);
 

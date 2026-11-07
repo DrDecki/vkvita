@@ -16,6 +16,7 @@ aliases = {
     "vkGetPhysicalDeviceProperties2KHR": "vkGetPhysicalDeviceProperties2",
     "vkGetPhysicalDeviceFeatures2KHR": "vkGetPhysicalDeviceFeatures2",
     "vkGetPhysicalDeviceMemoryProperties2KHR": "vkGetPhysicalDeviceMemoryProperties2",
+    "vkTrimCommandPoolKHR": "vkTrimCommandPool",
 }
 entries = sorted([(n, n) for n in names] + [(a, t) for a, t in aliases.items() if t in names])
 

@@ -69,6 +69,7 @@ typedef struct VkvConfig {
 	uint32_t       storageArraySize;   /* elements of a runtime array in a read-only storage buffer, default 64 */
 	const char    *shaderPackDir;      /* read-only GXP cache shipped with the app, e.g. "app0:shaders"; NULL = none */
 	uint32_t       splash;             /* 1 = vkCreateInstance shows the boot screen until the first present, default 1 */
+	uint32_t       splashColor;        /* logo and bar color of the boot screen as 0xRRGGBB, 0 = the logo's own color */
 } VkvConfig;
 
 void     vkvGetDefaultConfig(VkvConfig *config);
@@ -92,6 +93,25 @@ int      vkvLoadConfigFile(const char *path);
  * It disappears on the first vkQueuePresentKHR. Does nothing if splash is 0.
  */
 void     vkvShowSplash(void);
+
+/*
+ * Replaces the boot screen with your own drawing. Call before vkvShowSplash()
+ * or vkCreateInstance. The function runs on the boot screen's own thread once
+ * per vblank until the first vkQueuePresentKHR, so it must not touch anything
+ * the loading code changes at the same time. pixels is the 960x544 screen,
+ * pitch is in pixels, a pixel is 0xAABBGGRR. ms counts from 0 when the screen
+ * comes up; the screen is black before the first call. NULL restores the
+ * VkVita screen.
+ */
+typedef void (*PFN_vkvSplashDraw)(uint32_t *pixels, uint32_t pitch, uint32_t ms, void *user);
+void     vkvSetSplashDraw(PFN_vkvSplashDraw draw, void *user);
+/*
+ * Text for custom boot screens: an 8x16 font (ASCII 32 to 126, others draw as
+ * a space), scaled by scale, top left corner at x, y. Only the glyph pixels are
+ * written, in color (0xAABBGGRR). '\n' starts a new line. Clips at the screen
+ * edges (960x544).
+ */
+void     vkvSplashText(uint32_t *pixels, uint32_t pitch, int x, int y, int scale, uint32_t color, const char *text);
 
 /* --- Logging --- */
 typedef enum VkvLogLevel {
