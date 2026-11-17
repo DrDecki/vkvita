@@ -34,6 +34,27 @@ index 032e35d..38e5d61 100644
      sdl_link_dependency(base
        LIBS
          SceGxm_stub
+diff --git a/src/gpu/vulkan/SDL_gpu_vulkan.c b/src/gpu/vulkan/SDL_gpu_vulkan.c
+index 53212a2..0f304bf 100644
+--- a/src/gpu/vulkan/SDL_gpu_vulkan.c
++++ b/src/gpu/vulkan/SDL_gpu_vulkan.c
+@@ -72,9 +72,16 @@ typedef struct VulkanExtensions
+ 
+ // Defines
+ 
++#ifdef SDL_PLATFORM_VITA
++// The Vita has 512 MiB in total: allocate in small steps
++#define SMALL_ALLOCATION_THRESHOLD    1048576  // 1   MiB
++#define SMALL_ALLOCATION_SIZE         4194304  // 4   MiB
++#define LARGE_ALLOCATION_INCREMENT    1048576  // 1   MiB
++#else
+ #define SMALL_ALLOCATION_THRESHOLD    2097152  // 2   MiB
+ #define SMALL_ALLOCATION_SIZE         16777216 // 16  MiB
+ #define LARGE_ALLOCATION_INCREMENT    67108864 // 64  MiB
++#endif
+ #define MAX_UBO_SECTION_SIZE          4096     // 4   KiB
+ #define DESCRIPTOR_POOL_SIZE          128
+ #define WINDOW_PROPERTY_DATA          "SDL.internal.gpu.vulkan.data"
 diff --git a/src/video/vita/SDL_vitavideo.c b/src/video/vita/SDL_vitavideo.c
 index 379fe78..f62b918 100644
 --- a/src/video/vita/SDL_vitavideo.c

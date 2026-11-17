@@ -38,10 +38,10 @@ hand:
 - Integer push constant and uniform buffer members are converted to float on
   upload and back to int in the shader.
 - Integer varyings (`flat out int`) are carried as floats and rounded.
-- Varyings use locations 0 to 9, one GXM `TEXCOORD` slot each, so a stage
-  passes at most ten vectors to the next (`maxVertexOutputComponents` is 40).
-  A larger location fails with a clear error. Pack two `vec2` into one `vec4`
-  when you need more.
+- Varyings use locations 0 to 11: 0 to 9 are the GXM `TEXCOORD` slots,
+  10 and 11 the two color slots (`COLOR0`, `COLOR1`). A larger location
+  fails with a clear error. Pack two `vec2` into one `vec4` when you need
+  more. Arrays of varyings (`out vec4 v[3]`) take one location per element.
 - `gl_VertexIndex` and `gl_InstanceIndex` use the `INDEX` and `INSTANCE`
   inputs of the GXM compiler, so a vertex shader can build a full screen
   triangle without a vertex buffer. Unlike Vulkan they do not include
@@ -53,8 +53,10 @@ hand:
   center of the current pixel, with 1 / framebuffer size coming from a small
   uniform block VkVita fills itself (descriptor set 31). Only color
   attachments can be inputs.
-- `texelFetch`, `textureSize`, `textureQueryLevels` and texture offsets work
-  on 2D textures. GXM can only sample, so a fetch samples the texel center
+- `texelFetch`, `textureSize`, `textureQueryLevels`, `textureGrad` and
+  texture offsets work on 2D textures. The GXM compiler has no gradient
+  sampling, so `textureGrad` picks the mip level from the gradients and
+  samples that level. GXM can only sample, so a fetch samples the texel center
   at that mip level, and VkVita feeds the size and mip count of every bound
   texture to the shader (descriptor set 31).
 - Shadow samplers (`sampler2DShadow`, `texture(s, vec3)`) work: GXM has no
@@ -63,6 +65,10 @@ hand:
   there is no filtered compare.
 - Interface blocks between stages (`out Data { vec3 a; float b; }`) work,
   every member takes one varying slot.
+- Textures can be passed to functions (`vec4 blur(sampler2D t, vec2 uv)`):
+  the function is written once for every set of textures it is called with.
+- `inverse()` works on `mat2`, `mat3` and `mat4`.
+- `gl_FragDepth` replaces the depth of the pixel (a GXM depth replace pass).
 - Separate `texture2D` / `sampler` objects are combined. Every image and
   sampler pair used in the shader gets its own texture unit, and VkVita
   builds the texture from both descriptors at draw time.

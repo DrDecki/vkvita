@@ -144,11 +144,21 @@ typedef struct Io {
 	uint32_t var;
 	uint32_t member;
 	char     name[160];
+	char     elem[176];
 	char     type[32];
 	char     sem[24];
 	bool     isInt, frontFacing, isOutput;
 	char     floatType[16];
 } Io;
+
+#define MAX_SPECS       32
+#define MAX_SPEC_PARAMS 8
+typedef struct Spec {
+	uint32_t func;
+	uint32_t count;
+	uint32_t param[MAX_SPEC_PARAMS], var[MAX_SPEC_PARAMS], elem[MAX_SPEC_PARAMS];
+	bool     emitted, walked;
+} Spec;
 
 #define MAX_SAMPLERS 16
 #define NO_SAMPLER   0xFFFFFFFFu
@@ -186,6 +196,11 @@ typedef struct Tr {
 	bool            pointSize;
 	bool            texInfo;
 	bool            needCompare;
+	bool            needInverse;
+	Spec            specs[MAX_SPECS];
+	uint32_t        specCount;
+	int32_t         curSpec;
+	bool            hitParam;
 	Func           *fn;
 	Loop            loops[MAX_LOOPS];
 	uint32_t        loopDepth;
@@ -882,10 +897,79 @@ static uint32_t trace_resource(Tr *t, uint32_t id, uint32_t *elem) {
 			id = d[3];
 			break;
 		case SpvOpVariable: return id;
+		case SpvOpFunctionParameter:
+			if (t->curSpec >= 0) {
+				const Spec *sp = &t->specs[t->curSpec];
+				for (uint32_t k = 0; k < sp->count; k++)
+					if (sp->param[k] == id) {
+						if (sp->elem[k]) *elem = sp->elem[k];
+						return sp->var[k];
+					}
+			}
+			t->hitParam = true;
+			return 0;
 		default: return 0;
 		}
 	}
 	return 0;
+}
+
+static bool is_texture_type(Tr *t, uint32_t ty) {
+	uint32_t op = def_op(t, strip_ptr(t, ty));
+	return op == SpvOpTypeSampledImage || op == SpvOpTypeImage || op == SpvOpTypeSampler;
+}
+
+static Func *func_by_id(Tr *t, uint32_t id) {
+	for (uint32_t i = 0; i < t->funcCount; i++)
+		if (t->funcs[i].id == id) return &t->funcs[i];
+	return NULL;
+}
+
+static char *func_name(Tr *t, uint32_t id, int32_t spec) {
+	if (id == t->entry) return xstrdup("vkv_entry");
+	char *base = ident(t, id, "f");
+	if (spec < 0) return base;
+	char *n = xprintf("%s_s%d", base, (int)spec);
+	free(base);
+	return n;
+}
+
+static int32_t spec_for_call(Tr *t, const uint32_t *call) {
+	Func *g = func_by_id(t, call[3]);
+	if (!g) return -1;
+	Spec s;
+	memset(&s, 0, sizeof(s));
+	s.func = g->id;
+	uint32_t k = 4;
+	for (const uint32_t *w = g->begin + wc_of(g->begin); w < g->end && op_of(w) == SpvOpFunctionParameter; w += wc_of(w), k++) {
+		if (!is_texture_type(t, w[1]) || k >= wc_of(call)) continue;
+		if (s.count >= MAX_SPEC_PARAMS) { unsupported(t, "too many textures passed to one function"); return -1; }
+		uint32_t elem;
+		uint32_t var = trace_resource(t, call[k], &elem);
+		if (!var) { unsupported(t, "could not find the texture passed to a function"); return -1; }
+		uint32_t cv;
+		if (elem && !const_u32(t, elem, &cv)) { unsupported(t, "textures picked by a dynamic index can't be passed to functions"); return -1; }
+		s.param[s.count] = w[2];
+		s.var[s.count] = var;
+		s.elem[s.count] = elem;
+		s.count++;
+	}
+	if (!s.count) return -1;
+	for (uint32_t i = 0; i < t->specCount; i++) {
+		Spec *o = &t->specs[i];
+		if (o->func != s.func || o->count != s.count) continue;
+		bool same = true;
+		for (uint32_t j = 0; j < s.count && same; j++) {
+			uint32_t a = 0, b = 0;
+			const_u32(t, o->elem[j], &a);
+			const_u32(t, s.elem[j], &b);
+			same = o->var[j] == s.var[j] && a == b;
+		}
+		if (same) return (int32_t)i;
+	}
+	if (t->specCount >= MAX_SPECS) { unsupported(t, "too many copies of functions that take textures"); return -1; }
+	t->specs[t->specCount] = s;
+	return (int32_t)t->specCount++;
 }
 
 static int32_t find_combo(Tr *t, uint32_t imageVar, uint32_t samplerVar) {
@@ -946,16 +1030,15 @@ static int32_t add_combo(Tr *t, uint32_t imageVar, uint32_t samplerVar, uint32_t
 	return (int32_t)first;
 }
 
-static void collect_samplers(Tr *t) {
-	uint32_t combos = 0;
-	for (const uint32_t *w = t->words + 5; w < t->words + t->count; w += wc_of(w)) {
+static void collect_range(Tr *t, const uint32_t *begin, const uint32_t *end, uint32_t *combos) {
+	for (const uint32_t *w = begin; w < end; w += wc_of(w)) {
 		if (op_of(w) != SpvOpSampledImage) continue;
 		uint32_t ie, se;
 		uint32_t iv = trace_resource(t, w[3], &ie), sv = trace_resource(t, w[4], &se);
 		if (!iv || !sv) { unsupported(t, "could not find the image or sampler of a texture access"); continue; }
-		if (find_combo(t, iv, sv) < 0) add_combo(t, iv, sv, combos++);
+		if (find_combo(t, iv, sv) < 0) add_combo(t, iv, sv, (*combos)++);
 	}
-	for (const uint32_t *w = t->words + 5; w < t->words + t->count; w += wc_of(w)) {
+	for (const uint32_t *w = begin; w < end; w += wc_of(w)) {
 		uint32_t op = op_of(w);
 		if (op != SpvOpImageFetch && op != SpvOpImageQuerySizeLod && op != SpvOpImageQuerySize &&
 		    op != SpvOpImageQueryLevels)
@@ -965,8 +1048,32 @@ static void collect_samplers(Tr *t) {
 		uint32_t iv = trace_resource(t, w[3], &e);
 		if (!iv) { unsupported(t, "could not find the image of a texel fetch or size query"); continue; }
 		if (def_op(t, var_elem_type(t, iv)) == SpvOpTypeSampledImage) continue;
-		if (find_combo(t, iv, NO_SAMPLER) < 0) add_combo(t, iv, NO_SAMPLER, combos++);
+		if (find_combo(t, iv, NO_SAMPLER) < 0) add_combo(t, iv, NO_SAMPLER, (*combos)++);
 	}
+}
+
+static void walk_calls(Tr *t, Func *f, int32_t spec, uint32_t *combos, int depth) {
+	if (depth > 32 || t->status != TR_OK) return;
+	if (spec >= 0) { if (t->specs[spec].walked) return; t->specs[spec].walked = true; }
+	else { if (f->reachable) return; f->reachable = true; }
+	int32_t saved = t->curSpec;
+	t->curSpec = spec;
+	collect_range(t, f->begin, f->end, combos);
+	for (const uint32_t *w = f->begin; w < f->end && t->status == TR_OK; w += wc_of(w)) {
+		if (op_of(w) != SpvOpFunctionCall) continue;
+		Func *g = func_by_id(t, w[3]);
+		if (!g) continue;
+		t->curSpec = spec;
+		int32_t s = spec_for_call(t, w);
+		walk_calls(t, g, s, combos, depth + 1);
+	}
+	t->curSpec = saved;
+}
+
+static void collect_samplers(Tr *t) {
+	uint32_t combos = 0;
+	Func *entry = func_by_id(t, t->entry);
+	if (entry) walk_calls(t, entry, -1, &combos, 0);
 	for (const uint32_t *w = t->words + 5; w < t->words + t->count; w += wc_of(w)) {
 		if (op_of(w) != SpvOpVariable || w[3] != SpvStorageClassUniformConstant) continue;
 		if (def_op(t, var_elem_type(t, w[2])) != SpvOpTypeSampledImage) continue;
@@ -1048,6 +1155,13 @@ static bool io_semantic(Tr *t, Io *io, int32_t builtin, int32_t location, bool o
 		case SpvBuiltInFragCoord:
 			if (t->stage == VKV_SPIRV_FRAGMENT && !output) { snprintf(io->sem, sizeof(io->sem), "WPOS"); return true; }
 			break;
+		case SpvBuiltInFragDepth:
+			if (t->stage == VKV_SPIRV_FRAGMENT && output) {
+				snprintf(io->sem, sizeof(io->sem), "DEPTH");
+				snprintf(io->type, sizeof(io->type), "float");
+				return true;
+			}
+			break;
 		case SpvBuiltInFrontFacing:
 			if (t->stage == VKV_SPIRV_FRAGMENT && !output) {
 				snprintf(io->sem, sizeof(io->sem), "FACE");
@@ -1075,11 +1189,12 @@ static bool io_semantic(Tr *t, Io *io, int32_t builtin, int32_t location, bool o
 		snprintf(io->sem, sizeof(io->sem), "COLOR");
 		return true;
 	}
-	if (location >= 10) {
-		fail(t, "varying '%s' uses location %d, GXM has ten varying slots (locations 0 to 9)", what, location);
+	if (location >= 12) {
+		fail(t, "varying '%s' uses location %d, GXM has twelve varying slots (locations 0 to 11)", what, location);
 		return false;
 	}
-	snprintf(io->sem, sizeof(io->sem), "TEXCOORD%d", location);
+	if (location >= 10) snprintf(io->sem, sizeof(io->sem), "COLOR%d", location - 10);
+	else snprintf(io->sem, sizeof(io->sem), "TEXCOORD%d", location);
 	return true;
 }
 
@@ -1154,7 +1269,32 @@ static void declare_io(Tr *t, uint32_t var, bool output) {
 		return;
 	}
 	if (td && op_of(td) == SpvOpTypeArray) {
-		fail(t, "arrays in the stage interface are not supported ('%s')", v->name ? v->name : "?");
+		uint32_t et = td[2], n = 0;
+		uint32_t eop = def_op(t, et);
+		if (!const_u32(t, td[3], &n) || !n || eop == SpvOpTypeArray || eop == SpvOpTypeStruct || eop == SpvOpTypeMatrix ||
+		    v->builtin >= 0 || v->location < 0 || (t->stage == VKV_SPIRV_VERTEX && !output) ||
+		    (t->stage == VKV_SPIRV_FRAGMENT && output)) {
+			fail(t, "this array in the stage interface is not supported ('%s')", v->name ? v->name : "?");
+			return;
+		}
+		char nm[64], base[96], st[32];
+		if (v->name && v->name[0]) clean_name(v->name, nm, sizeof(nm));
+		else snprintf(nm, sizeof(nm), "io");
+		snprintf(base, sizeof(base), "%s_%u", nm, var);
+		type_str(t, et, st, sizeof(st));
+		sb_printf(&t->globals, "static %s %s[%u];\n", st, base, n);
+		for (uint32_t i = 0; i < n; i++) {
+			Io *io = new_io(t);
+			if (!io) return;
+			io->var = var;
+			io->isOutput = output;
+			snprintf(io->name, sizeof(io->name), "%s_%u", base, i);
+			snprintf(io->elem, sizeof(io->elem), "%s[%u]", base, i);
+			if (!io_semantic(t, io, -1, v->location + (int32_t)i, output, io->name)) return;
+			finish_io_type(t, io, et);
+		}
+		free(v->expr);
+		v->expr = xstrdup(base);
 		return;
 	}
 	Io *io = new_io(t);
@@ -1429,13 +1569,21 @@ static void emit_image_sample(Tr *t, const uint32_t *w) {
 		snprintf(cc, sizeof(cc), "%s", shifted);
 		free(shifted);
 	}
-	char call[1000];
+	char call[2400];
 	const char *pad = need == 1 ? ", 0.0f, 0.0f" : need == 2 ? ", 0.0f" : "";
 	if (o.lod) snprintf(call, sizeof(call), "%s($S, float4(%s%s, %s))", tex_fn(s, "lod"), cc, pad, val(t, o.lod));
 	else if (o.bias) snprintf(call, sizeof(call), "%s($S, float4(%s%s, %s))", tex_fn(s, "bias"), cc, pad, val(t, o.bias));
-	else if (o.gx) snprintf(call, sizeof(call), "%s($S, %s, %s, %s)", tex_fn(s, "grad"), cc, val(t, o.gx), val(t, o.gy));
+	else if (o.gx) {
+		if (need != 2) { unsupported(t, "textureGrad is only supported on 2D textures"); return; }
+		use_texinfo(t);
+		char gx[200], gy[200];
+		snprintf(gx, sizeof(gx), "(%s * vkv_texinfo[$U].xy)", val(t, o.gx));
+		snprintf(gy, sizeof(gy), "(%s * vkv_texinfo[$U].xy)", val(t, o.gy));
+		snprintf(call, sizeof(call), "%s($S, float4(%s, 0.0f, 0.5f * log2(max(max(dot(%s, %s), dot(%s, %s)), 1e-8f))))",
+		         tex_fn(s, "lod"), cc, gx, gx, gy, gy);
+	}
 	else snprintf(call, sizeof(call), "%s($S, %s)", tex_fn(s, ""), cc);
-	char tmpl[1300];
+	char tmpl[2700];
 	if (dref) {
 		use_texinfo(t);
 		t->needCompare = true;
@@ -1531,6 +1679,7 @@ static void emit_ext(Tr *t, const uint32_t *w) {
 	case GLSLstd450Sqrt: fn = "sqrt"; break;
 	case GLSLstd450InverseSqrt: fn = "rsqrt"; break;
 	case GLSLstd450Determinant: fn = "determinant"; break;
+	case GLSLstd450MatrixInverse: fn = "vkv_inverse"; t->needInverse = true; break;
 	case GLSLstd450FMin: case GLSLstd450UMin: case GLSLstd450SMin: case GLSLstd450NMin: fn = "min"; break;
 	case GLSLstd450FMax: case GLSLstd450UMax: case GLSLstd450SMax: case GLSLstd450NMax: fn = "max"; break;
 	case GLSLstd450FClamp: case GLSLstd450UClamp: case GLSLstd450SClamp: case GLSLstd450NClamp: fn = "clamp"; break;
@@ -2055,17 +2204,21 @@ static void emit_inst(Tr *t, const uint32_t *w) {
 		return;
 	case SpvOpFunctionCall: {
 		Sb b = { 0 };
+		bool firstArg = true;
 		for (uint32_t k = 4; k < wc; k++) {
 			uint32_t a = w[k];
+			if (is_texture_type(t, id_at(t, a)->type)) continue;
 			if (def_op(t, id_at(t, a)->type) == SpvOpTypePointer) {
 				char *p = ptr_expr(t, a);
-				sb_printf(&b, "%s%s", k > 4 ? ", " : "", p);
+				sb_printf(&b, "%s%s", firstArg ? "" : ", ", p);
 				free(p);
 			} else {
-				sb_printf(&b, "%s%s", k > 4 ? ", " : "", val(t, a));
+				sb_printf(&b, "%s%s", firstArg ? "" : ", ", val(t, a));
 			}
+			firstArg = false;
 		}
-		char *fn = ident(t, w[3], "f");
+		int32_t callSpec = spec_for_call(t, w);
+		char *fn = func_name(t, w[3], callSpec);
 		if (def_op(t, rt) == SpvOpTypeVoid) { ind(t); sb_printf(t->out, "%s(%s);\n", fn, b.p ? b.p : ""); }
 		else emit_assign(t, res, "%s(%s)", fn, b.p ? b.p : "");
 		free(fn);
@@ -2181,14 +2334,19 @@ static void declare_locals(Tr *t, Func *f) {
 	}
 }
 
-static void emit_function(Tr *t, Func *f) {
-	if (f->emitted) return;
-	f->emitted = true;
+static void emit_function(Tr *t, Func *f, int32_t spec) {
+	if (spec >= 0) { if (t->specs[spec].emitted) return; t->specs[spec].emitted = true; }
+	else { if (f->emitted) return; f->emitted = true; }
 	for (const uint32_t *w = f->begin; w < f->end; w += wc_of(w))
-		if (op_of(w) == SpvOpFunctionCall)
-			for (uint32_t i = 0; i < t->funcCount; i++)
-				if (t->funcs[i].id == w[3]) emit_function(t, &t->funcs[i]);
+		if (op_of(w) == SpvOpFunctionCall) {
+			Func *g = func_by_id(t, w[3]);
+			if (!g) continue;
+			t->curSpec = spec;
+			int32_t s = spec_for_call(t, w);
+			emit_function(t, g, s);
+		}
 	if (t->status != TR_OK) return;
+	t->curSpec = spec;
 
 	Sb out = { 0 };
 	Sb *saved = t->out;
@@ -2196,7 +2354,7 @@ static void emit_function(Tr *t, Func *f) {
 	t->fn = f;
 	char rts[32];
 	type_str(t, f->begin[1], rts, sizeof(rts));
-	char *name = f->id == t->entry ? xstrdup("vkv_entry") : ident(t, f->id, "f");
+	char *name = func_name(t, f->id, spec);
 	sb_printf(&out, "%s %s(", rts, name);
 	free(name);
 	bool first = true;
@@ -2206,9 +2364,9 @@ static void emit_function(Tr *t, Func *f) {
 		bool ptr = def_op(t, ty) == SpvOpTypePointer;
 		type_str(t, strip_ptr(t, ty), ts, sizeof(ts));
 		array_suffix(t, ty, suffix, sizeof(suffix));
-		if (def_op(t, strip_ptr(t, ty)) == SpvOpTypeSampledImage || def_op(t, strip_ptr(t, ty)) == SpvOpTypeImage) {
-			unsupported(t, "textures as function parameters are not supported");
-			break;
+		if (is_texture_type(t, ty)) {
+			if (spec < 0) { unsupported(t, "textures as function parameters need a known texture"); break; }
+			continue;
 		}
 		char *p = ptr ? ptr_expr(t, w[2]) : xstrdup(val(t, w[2]));
 		sb_printf(&out, "%s%s%s %s%s", first ? "" : ", ", ptr ? "inout " : "", ts, p, suffix);
@@ -2226,7 +2384,36 @@ static void emit_function(Tr *t, Func *f) {
 	if (out.oom) t->status = TR_FAIL;
 	if (out.p) sb_puts(&t->funcsOut, out.p);
 	free(out.p);
+	t->curSpec = -1;
 }
+
+static const char k_inverse_helpers[] =
+	"float2x2 vkv_inverse(float2x2 m)\n{\n"
+	"    return float2x2(m[1][1], -m[0][1], -m[1][0], m[0][0]) / (m[0][0] * m[1][1] - m[0][1] * m[1][0]);\n}\n"
+	"float3x3 vkv_inverse(float3x3 m)\n{\n"
+	"    float b01 = m[2][2] * m[1][1] - m[1][2] * m[2][1], b11 = m[1][2] * m[2][0] - m[2][2] * m[1][0];\n"
+	"    float b21 = m[2][1] * m[1][0] - m[1][1] * m[2][0];\n"
+	"    float det = m[0][0] * b01 + m[0][1] * b11 + m[0][2] * b21;\n"
+	"    return float3x3(b01, m[0][2] * m[2][1] - m[2][2] * m[0][1], m[1][2] * m[0][1] - m[0][2] * m[1][1],\n"
+	"                    b11, m[2][2] * m[0][0] - m[0][2] * m[2][0], m[0][2] * m[1][0] - m[1][2] * m[0][0],\n"
+	"                    b21, m[0][1] * m[2][0] - m[2][1] * m[0][0], m[1][1] * m[0][0] - m[0][1] * m[1][0]) / det;\n}\n"
+	"float4x4 vkv_inverse(float4x4 m)\n{\n"
+	"    float b00 = m[0][0] * m[1][1] - m[0][1] * m[1][0], b01 = m[0][0] * m[1][2] - m[0][2] * m[1][0];\n"
+	"    float b02 = m[0][0] * m[1][3] - m[0][3] * m[1][0], b03 = m[0][1] * m[1][2] - m[0][2] * m[1][1];\n"
+	"    float b04 = m[0][1] * m[1][3] - m[0][3] * m[1][1], b05 = m[0][2] * m[1][3] - m[0][3] * m[1][2];\n"
+	"    float b06 = m[2][0] * m[3][1] - m[2][1] * m[3][0], b07 = m[2][0] * m[3][2] - m[2][2] * m[3][0];\n"
+	"    float b08 = m[2][0] * m[3][3] - m[2][3] * m[3][0], b09 = m[2][1] * m[3][2] - m[2][2] * m[3][1];\n"
+	"    float b10 = m[2][1] * m[3][3] - m[2][3] * m[3][1], b11 = m[2][2] * m[3][3] - m[2][3] * m[3][2];\n"
+	"    float det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;\n"
+	"    return float4x4(\n"
+	"        m[1][1] * b11 - m[1][2] * b10 + m[1][3] * b09, m[0][2] * b10 - m[0][1] * b11 - m[0][3] * b09,\n"
+	"        m[3][1] * b05 - m[3][2] * b04 + m[3][3] * b03, m[2][2] * b04 - m[2][1] * b05 - m[2][3] * b03,\n"
+	"        m[1][2] * b08 - m[1][0] * b11 - m[1][3] * b07, m[0][0] * b11 - m[0][2] * b08 + m[0][3] * b07,\n"
+	"        m[3][2] * b02 - m[3][0] * b05 - m[3][3] * b01, m[2][0] * b05 - m[2][2] * b02 + m[2][3] * b01,\n"
+	"        m[1][0] * b10 - m[1][1] * b08 + m[1][3] * b06, m[0][1] * b08 - m[0][0] * b10 - m[0][3] * b06,\n"
+	"        m[3][0] * b04 - m[3][1] * b02 + m[3][3] * b00, m[2][1] * b02 - m[2][0] * b04 - m[2][3] * b00,\n"
+	"        m[1][1] * b07 - m[1][0] * b09 - m[1][2] * b06, m[0][0] * b09 - m[0][1] * b07 + m[0][2] * b06,\n"
+	"        m[3][1] * b01 - m[3][0] * b03 - m[3][2] * b00, m[2][0] * b03 - m[2][1] * b01 + m[2][2] * b00) / det;\n}\n";
 
 static void emit_main(Tr *t, Sb *o) {
 	bool scissor = g_nativeScissor && t->stage == VKV_SPIRV_FRAGMENT;
@@ -2262,16 +2449,18 @@ static void emit_main(Tr *t, Sb *o) {
 	for (uint32_t i = 0; i < t->ioCount; i++) {
 		const Io *io = &t->io[i];
 		if (io->isOutput) continue;
-		if (io->frontFacing) sb_printf(o, "    %s = stage_input_%s > 0.0f;\n", io->name, io->name);
-		else if (io->isInt) sb_printf(o, "    %s = %s(floor(stage_input_%s + 0.5f));\n", io->name, io->type, io->name);
-		else sb_printf(o, "    %s = stage_input_%s;\n", io->name, io->name);
+		const char *dst = io->elem[0] ? io->elem : io->name;
+		if (io->frontFacing) sb_printf(o, "    %s = stage_input_%s > 0.0f;\n", dst, io->name);
+		else if (io->isInt) sb_printf(o, "    %s = %s(floor(stage_input_%s + 0.5f));\n", dst, io->type, io->name);
+		else sb_printf(o, "    %s = stage_input_%s;\n", dst, io->name);
 	}
 	sb_puts(o, "    vkv_entry();\n");
 	for (uint32_t i = 0; i < t->ioCount; i++) {
 		const Io *io = &t->io[i];
 		if (!io->isOutput) continue;
-		if (io->isInt) sb_printf(o, "    stage_output_%s = %s(%s);\n", io->name, io->floatType, io->name);
-		else sb_printf(o, "    stage_output_%s = %s;\n", io->name, io->name);
+		const char *src = io->elem[0] ? io->elem : io->name;
+		if (io->isInt) sb_printf(o, "    stage_output_%s = %s(%s);\n", io->name, io->floatType, src);
+		else sb_printf(o, "    stage_output_%s = %s;\n", io->name, src);
 	}
 	sb_puts(o, "}\n");
 }
@@ -2407,11 +2596,12 @@ int vkv_spirv_translate_native(const uint32_t *words, size_t wordCount, VkvSpirv
 	t.strideCount = strideCount;
 
 	int status = TR_FAIL;
+	t.curSpec = -1;
 	if (parse(&t)) {
 		collect_samplers(&t);
 		if (t.status == TR_OK) declare_globals(&t);
 		for (uint32_t i = 0; t.status == TR_OK && i < t.funcCount; i++)
-			if (t.funcs[i].id == t.entry) emit_function(&t, &t.funcs[i]);
+			if (t.funcs[i].id == t.entry) emit_function(&t, &t.funcs[i], -1);
 		if (t.status == TR_OK) {
 			Sb o = { 0 };
 			sb_printf(&o, "/* generated by VkVita from SPIR-V (%s) */\n", stage == VKV_SPIRV_VERTEX ? "vertex" : "fragment");
@@ -2427,6 +2617,7 @@ int vkv_spirv_translate_native(const uint32_t *words, size_t wordCount, VkvSpirv
 				            "float vkv_compare(float r, float d, float3 op)\n{\n"
 				            "    float s = sign(d - r);\n"
 				            "    return op.y + (op.x - op.y) * saturate(s) + (op.z - op.y) * saturate(-s);\n}\n");
+			if (t.needInverse) sb_puts(&o, k_inverse_helpers);
 			sb_puts(&o, "\n");
 			if (t.funcsOut.p) sb_puts(&o, t.funcsOut.p);
 			emit_main(&t, &o);

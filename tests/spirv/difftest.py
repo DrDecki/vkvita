@@ -118,6 +118,10 @@ def cg_to_hlsl(cg, stage, cbBinding, texSet):
             attr = '[[vk::location(%s)]] ' % sem[4:]
         elif sem.startswith('TEXCOORD'):
             attr = '[[vk::location(%s)]] ' % sem[8:]
+        elif sem in ('COLOR0', 'COLOR1'):
+            attr = '[[vk::location(%d)]] ' % (10 + int(sem[5:]))
+        elif sem == 'DEPTH':
+            sem = 'SV_Depth'
         elif sem == 'POSITION' or sem == 'WPOS':
             sem = 'SV_Position'
         elif sem == 'COLOR':

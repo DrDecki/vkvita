@@ -15,7 +15,9 @@ SDL's Vita video driver gets Vulkan support from a small patch,
 `patches/sdl3-vita-vulkan.patch` in this repository (until it is part of SDL).
 It adds `src/video/vita/SDL_vitavulkan.c`, which takes `vkGetInstanceProcAddr`
 from the linked VkVita and creates the display surface with
-`VK_EXT_headless_surface`.
+`VK_EXT_headless_surface`. On the Vita it also makes SDL's Vulkan driver allocate memory in
+small steps (4 MiB blocks, larger allocations rounded up to 1 MiB) instead
+of 16 and 64 MiB blocks, which the Vita's 512 MiB can't afford.
 
 ```sh
 git clone https://github.com/libsdl-org/SDL.git sdl3 && cd sdl3
@@ -58,8 +60,8 @@ renderer starts GXM itself and can't run next to VkVita.
 
 - Compute pipelines, storage textures and writes to storage buffers (GXM has
   no compute). Read-only storage buffers work.
-- Texture arrays and cube map arrays in shaders, writing `gl_FragDepth` /
-  `SV_Depth`, clip distances. Such shaders fail with a message in the log.
+- Texture arrays and cube map arrays in shaders, clip distances. Such shaders
+  fail with a message in the log.
 - Anisotropic filtering, depth clamp and blend constants are ignored.
 - One window, one GPU device.
 
